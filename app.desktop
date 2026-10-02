@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Shift Scheduler
+Comment=Team Shift Scheduling Tool with Rotation Schemes
+Exec=bash /home/meto/workspace/shift_scheduler/start-app.sh
+Icon=applications-system
+Terminal=false
+Type=Application
+Categories=Office;Productivity;
+StartupNotify=true
