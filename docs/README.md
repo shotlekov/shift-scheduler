@@ -4,6 +4,14 @@
 
 Shift Scheduler is a desktop application for managing team shift schedules with rotation patterns, constraint validation, and notification support. It supports both 2-shift and 3-shift rotation models.
 
+## Quick Links
+
+- [User Guide](user-guide.md) — How to use the application
+- [Architecture](architecture.md) — System design and components
+- [API Reference](api.md) — shiftcore library API
+- [Developer Guide](developer-guide.md) — Contributing and development setup
+- [Deployment](deployment.md) — Building and distributing
+
 ## Architecture
 
 ```
@@ -34,7 +42,7 @@ shift-scheduler/
 
 ```bash
 # Clone the repository
-git clone <repository-url>
+git clone https://github.com/shotlekov/shift-scheduler.git
 cd shift-scheduler
 
 # Install dependencies (Python 3.10+ required)
@@ -46,13 +54,24 @@ python src/app.py
 
 ### Pre-built Binary
 
-Download the latest release from the releases page, or build from source:
+Download the latest release from the [releases page](https://github.com/shotlekov/shift-scheduler/releases), or build from source:
 
 ```bash
 ./build.sh
 ```
 
-The executable will be in `dist/shift-scheduler`.
+The executable will be in `dist/shift-scheduler` (Linux) or `dist/shift-scheduler.exe` (Windows).
+
+## Requirements
+
+- Python 3.10+
+- tkinter (usually included with Python)
+- Optional: `python-telegram-bot>=20.0` and `aiosmtplib>=2.0` for notifications
+
+Install optional dependencies:
+```bash
+pip install python-telegram-bot aiosmtplib
+```
 
 ## Usage
 
@@ -73,10 +92,10 @@ The executable will be in `dist/shift-scheduler`.
 - **Teams**: 3 teams with 6-day cycle `[1,1,2,2,0,0]`
 - **Max consecutive**: 5 shifts
 
-#### 3-Shift Model (Future)
+#### 3-Shift Model
 - **Shift 1**: 06:00 - 14:00
 - **Shift 2**: 14:00 - 22:00
-- **Shift 3**: 22:00 - 06:00 (night shift)
+- **Shift 3**: 22:00 - 06:00 (night shift, crosses midnight)
 - **Teams**: 5 teams with 10-day cycle `[1,1,2,2,0,0,3,3,0,0]`
 - **Max consecutive**: 5 shifts (3 for night shift)
 
@@ -94,82 +113,6 @@ The application supports notifications via:
 - **Email**: Individual email notifications
 
 Configure notification settings in the "Notifications" tab.
-
-## API Reference
-
-### shiftcore Package
-
-#### Models
-
-```python
-from shiftcore import Team, Person, ShiftAssignment, ShiftSwap, AvailabilityException
-
-# Team
-team = Team(name="Team A", color="#2563eb", rotation_group_id=1, offset=0)
-
-# Person
-person = Person(name="John Doe", team_id=1, role="operator", active=True)
-
-# Shift Assignment
-assignment = ShiftAssignment(
-    schedule_date=date(2024, 1, 1),
-    shift_type=ShiftType.DAY,
-    person_id=1,
-    team_id=1,
-)
-```
-
-#### Rotation Engine
-
-```python
-from shiftcore import RotationEngine, RotationGroup, ShiftType
-
-# Create a rotation group
-rotation = RotationGroup(
-    name="Default",
-    shift_model="2-shift",
-    cycle_start=date(2024, 1, 1),
-)
-
-# Get shift for a team on a specific date
-engine = RotationEngine(rotation)
-shift = engine.get_team_shift(team_offset=0, check_date=date(2024, 1, 1))
-```
-
-#### Scheduler
-
-```python
-from shiftcore import generate_schedule
-
-result = generate_schedule(
-    rotation=rotation,
-    teams=teams,
-    persons=persons,
-    exceptions=exceptions,
-    existing_assignments=[],
-    start_date=date(2024, 1, 1),
-    end_date=date(2024, 1, 14),
-)
-
-# Access results
-for assignment in result.assignments:
-    print(f"{assignment.schedule_date}: {assignment.person_id} on {assignment.shift_type}")
-```
-
-#### Storage
-
-```python
-from shiftcore import SQLiteRepository
-
-repo = SQLiteRepository("data/shift_scheduler.db")
-
-# Create a team
-team = Team(name="Team A", color="#2563eb", rotation_group_id=1, offset=0)
-team_id = repo.create_team(team)
-
-# Get all teams
-teams = repo.get_teams()
-```
 
 ## Testing
 
@@ -211,3 +154,7 @@ The executable will be in `dist/shift-scheduler.exe`.
 3. **Import/Export**: Support for importing schedules from CSV
 4. **Mobile app**: Native mobile application for shift management
 5. **Advanced reporting**: Generate reports on shift distribution and fairness metrics
+
+## License
+
+MIT License - see LICENSE file for details.
