@@ -793,10 +793,10 @@ def get_schedule_grid(start_date: date, end_date: date, cycle_start: date):
     """Get a grid view of the schedule for display."""
     assignments = _get_repo().get_assignments(start_date, end_date)
 
-    # Build lookup
+    # Build lookup - use date.isoformat() string for consistent key
     assignment_map = {}
     for a in assignments:
-        key = (a.schedule_date, a.team_id, int(a.shift_type))
+        key = (a.schedule_date.isoformat(), a.team_id, int(a.shift_type))
         assignment_map[key] = a
 
     rotation = _get_repo().get_rotation_group()
