@@ -683,6 +683,9 @@ class ShiftSchedulerApp:
             row=0, column=0, sticky="w", padx=(0, 4)
         )
         self.initial_date_var = tk.StringVar(value=date.today().isoformat())
+        self.initial_date_var.trace_add(
+            "write", lambda *args: self._refresh_manual_config()
+        )
         ttk.Entry(date_frame, textvariable=self.initial_date_var, width=12).grid(
             row=0, column=1, padx=(0, 16)
         )
@@ -1350,6 +1353,7 @@ class ShiftSchedulerApp:
         self._refresh_exceptions()
         self._refresh_swaps()
         self._refresh_notifications()
+        self._refresh_manual_config()  # Refresh manual config when model/date changes
         self._on_load_schedule()
 
     def _refresh_teams(self):
@@ -1511,7 +1515,8 @@ class ShiftSchedulerApp:
                 self.schedule_data = result
                 self._setup_schedule_columns()
                 self._populate_schedule_tree()
-                self._refresh_manual_config()  # Refresh manual config UI
+                # Don't refresh manual config here - it would reset user selections
+                # self._refresh_manual_config()  # Only call when initial date/model changes
                 self.status_var.set(
                     f"Loaded schedule for {len(result)} days (18 months)"
                 )
