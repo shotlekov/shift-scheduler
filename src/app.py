@@ -1638,8 +1638,17 @@ class ShiftSchedulerApp:
                     ),
                 )
 
+        # Apply button
+        apply_frame = ttk.Frame(self.manual_config_frame)
+        apply_frame.grid(row=len(teams) + 1, column=0, columnspan=3, pady=8)
+        ttk.Button(
+            apply_frame,
+            text="Apply Manual Configuration",
+            command=self._on_apply_manual_config,
+        ).pack()
+
     def _on_manual_config_change(self, team_id: int, day_offset: int):
-        """Handle manual configuration change."""
+        """Handle manual configuration change - stores selection but doesn't regenerate."""
         var = self.manual_config_vars.get((team_id, day_offset))
         if var:
             value = var.get()
@@ -1654,8 +1663,55 @@ class ShiftSchedulerApp:
                 shift_map = {"1st": 1, "2nd": 2, "3rd": 3, "OFF": 0}
                 self.manual_first_days[(team_id, config_date)] = shift_map.get(value, 0)
 
-            # Reload schedule to reflect changes
-            self._on_load_schedule()
+    def _on_apply_manual_config(self):
+        """Apply manual first 2 days configuration by regenerating schedule."""
+        if not self.manual_first_days:
+            messagebox.showinfo("No Changes", "No manual overrides configured.")
+            return
+
+        initial_date = date.fromisoformat(self.initial_date_var.get())
+        end_date = initial_date + timedelta(days=547)  # 18 months
+        cycle_start = initial_date
+
+        result = messagebox.askyesno(
+            "Apply Manual Configuration",
+            f"This will regenerate the schedule from {initial_date} to {end_date} (18 months)\n"
+            f"with {len(self.manual_first_days)} manual override(s) for the first 2 days.\n"
+            f"All existing assignments will be replaced.\n\nContinue?",
+        )
+        if not result:
+            return
+
+        self._set_busy(True)
+        self.status_var.set("Applying manual configuration...")
+
+        def generate_schedule():
+            return generate_schedule(
+                initial_date,
+                end_date,
+                cycle_start,
+                use_substitutes=True,
+                manual_overrides=self.manual_first_days,
+            )
+
+        def on_done(result):
+            message = f"Schedule regenerated with manual overrides!\n"
+            message += f"Assignments: {len(result['assignments'])}\n"
+            message += f"Conflicts: {len(result['conflicts'])}\n"
+            message += f"Substitutes used: {len(result['substitutes_used'])}\n"
+            message += f"Unfilled shifts: {len(result['unfilled_shifts'])}"
+
+            messagebox.showinfo("Generation Complete", message)
+            self.status_var.set("Schedule regenerated successfully")
+            self._set_busy(False)
+            self._on_load_schedule()  # Refresh the schedule view
+
+        def on_error(exc):
+            self.status_var.set(f"Error: {str(exc)}")
+            messagebox.showerror("Generation Error", str(exc))
+            self._set_busy(False)
+
+        self._run_in_background(generate_schedule, on_done, on_error)
 
     def _setup_schedule_columns(self):
         """Set up schedule tree columns dynamically based on teams."""
