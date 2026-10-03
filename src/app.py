@@ -1685,7 +1685,7 @@ class ShiftSchedulerApp:
         self._set_busy(True)
         self.status_var.set("Applying manual configuration...")
 
-        def generate_schedule():
+        def do_generate_schedule():
             return generate_schedule(
                 initial_date,
                 end_date,
@@ -1711,7 +1711,7 @@ class ShiftSchedulerApp:
             messagebox.showerror("Generation Error", str(exc))
             self._set_busy(False)
 
-        self._run_in_background(generate_schedule, on_done, on_error)
+        self._run_in_background(do_generate_schedule, on_done, on_error)
 
     def _setup_schedule_columns(self):
         """Set up schedule tree columns dynamically based on teams."""
@@ -1785,7 +1785,7 @@ class ShiftSchedulerApp:
             self._set_busy(True)
             self.status_var.set("Generating schedule...")
 
-            def generate_schedule():
+            def do_generate_schedule():
                 return generate_schedule(
                     initial_date,
                     end_date,
@@ -1811,7 +1811,7 @@ class ShiftSchedulerApp:
                 messagebox.showerror("Generation Error", str(exc))
                 self._set_busy(False)
 
-            self._run_in_background(generate_schedule, on_done, on_error)
+            self._run_in_background(do_generate_schedule, on_done, on_error)
 
         except ValueError as e:
             messagebox.showerror("Invalid Date", f"Please enter valid dates: {str(e)}")
