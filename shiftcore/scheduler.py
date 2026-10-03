@@ -101,10 +101,14 @@ def generate_schedule(
     shift_defs: dict = None,
     max_consecutive: dict = None,
     fairness_engine: FairnessEngine = None,
+    auto_substitute: bool = False,
 ) -> ScheduleResult:
     """
     Generate complete schedule for date range.
     Returns ScheduleResult with assignments, unfilled, substitutions, conflicts, fairness_report.
+
+    If auto_substitute=False (default), unfilled shifts are returned with recommended substitutes
+    for admin review. Admin must manually approve substitutions.
     """
     if shift_defs is None:
         shift_defs = SHIFT_DEFINITIONS
@@ -163,7 +167,7 @@ def generate_schedule(
                     }
                 )
 
-                # Try substitution
+                # Find recommended substitutes for admin review
                 exclude_ids = [p.id for p in team_persons]
                 substitute = find_substitute(
                     rotation,
@@ -179,14 +183,15 @@ def generate_schedule(
                     fairness_engine,
                 )
 
-                if substitute:
+                if auto_substitute and substitute:
+                    # Auto-assign substitute (legacy behavior)
                     assignment = ShiftAssignment(
                         schedule_date=current,
                         shift_type=shift_type,
                         person_id=substitute.id,
                         team_id=team.id,
                         is_substitute=True,
-                        substitute_for_id=None,  # No specific person to substitute for
+                        substitute_for_id=None,
                         notes=f"Substitute from team {substitute.team_id}",
                     )
                     all_assignments.append(assignment)
@@ -204,14 +209,24 @@ def generate_schedule(
                     )
                     fairness_engine.record_assignment(substitute.id, current, counters)
                 else:
-                    result.unfilled_shifts.append(
-                        {
-                            "date": current.isoformat(),
-                            "team_id": team.id,
-                            "team_name": team.name,
-                            "shift": shift_type.name,
-                        }
-                    )
+                    # Return unfilled shift with recommended substitute for admin review
+                    unfilled = {
+                        "date": current.isoformat(),
+                        "team_id": team.id,
+                        "team_name": team.name,
+                        "shift": shift_type.name,
+                        "reason": "No available team members",
+                        "recommended_substitute_id": substitute.id
+                        if substitute
+                        else None,
+                        "recommended_substitute_name": substitute.name
+                        if substitute
+                        else None,
+                        "recommended_substitute_team_id": substitute.team_id
+                        if substitute
+                        else None,
+                    }
+                    result.unfilled_shifts.append(unfilled)
                 continue
 
             # Check constraints for each available person
@@ -258,7 +273,7 @@ def generate_schedule(
                     fairness_engine,
                 )
 
-                if substitute:
+                if auto_substitute and substitute:
                     assignment = ShiftAssignment(
                         schedule_date=current,
                         shift_type=shift_type,
@@ -283,14 +298,24 @@ def generate_schedule(
                     )
                     fairness_engine.record_assignment(substitute.id, current, counters)
                 else:
-                    result.unfilled_shifts.append(
-                        {
-                            "date": current.isoformat(),
-                            "team_id": team.id,
-                            "team_name": team.name,
-                            "shift": shift_type.name,
-                        }
-                    )
+                    # Return unfilled shift with recommended substitute for admin review
+                    unfilled = {
+                        "date": current.isoformat(),
+                        "team_id": team.id,
+                        "team_name": team.name,
+                        "shift": shift_type.name,
+                        "reason": "No eligible team members (constraints)",
+                        "recommended_substitute_id": substitute.id
+                        if substitute
+                        else None,
+                        "recommended_substitute_name": substitute.name
+                        if substitute
+                        else None,
+                        "recommended_substitute_team_id": substitute.team_id
+                        if substitute
+                        else None,
+                    }
+                    result.unfilled_shifts.append(unfilled)
                 continue
 
             # Select best candidate by fairness

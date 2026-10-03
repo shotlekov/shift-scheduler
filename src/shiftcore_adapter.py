@@ -696,13 +696,15 @@ def generate_schedule(
     start_date: date,
     end_date: date,
     cycle_start: date,
-    use_substitutes: bool = True,
+    use_substitutes: bool = False,
     manual_overrides: dict = None,
 ):
     """Generate a complete schedule for the date range.
 
     Args:
         manual_overrides: Dict of {(team_id, date): shift_type} for manual first days config
+        use_substitutes: If True, auto-assign substitutes. If False (default), return unfilled shifts
+                         with recommended substitutes for admin review.
     """
     rotation = _get_repo().get_rotation_group()
     if not rotation:
@@ -741,6 +743,7 @@ def generate_schedule(
         shift_defs=SHIFT_DEFINITIONS,
         max_consecutive=MAX_CONSECUTIVE,
         fairness_engine=fairness,
+        auto_substitute=use_substitutes,
     )
 
     # Apply manual overrides for first 2 days
@@ -765,6 +768,9 @@ def generate_schedule(
 
     # Save assignments to database
     _get_repo().save_assignments(result.assignments)
+
+    # Save unfilled shifts to database
+    _get_repo().save_unfilled_shifts(result.unfilled_shifts)
 
     # Format results for UI
     return {
@@ -798,6 +804,13 @@ def get_schedule_grid(start_date: date, end_date: date, cycle_start: date):
     for a in assignments:
         key = (a.schedule_date.isoformat(), a.team_id, int(a.shift_type))
         assignment_map[key] = a
+
+    # Also get unfilled shifts with recommended substitutes
+    unfilled_shifts = _get_repo().get_unfilled_shifts(start_date, end_date)
+    unfilled_map = {}
+    for u in unfilled_shifts:
+        key = (u["date"], u["team_id"], u["shift"])
+        unfilled_map[key] = u
 
     rotation = _get_repo().get_rotation_group()
     teams = _get_repo().get_teams()
@@ -837,13 +850,36 @@ def get_schedule_grid(start_date: date, end_date: date, cycle_start: date):
                         "notes": assignment.notes,
                     }
                 else:
-                    row["teams"][team.id] = {
-                        "shift": shift.name,
-                        "person": "UNASSIGNED",
-                        "person_id": None,
-                        "is_sub": False,
-                        "notes": "",
-                    }
+                    # Check if this is an unfilled shift with recommended substitute
+                    unfilled_key = (date_str, team.id, shift.name)
+                    unfilled = unfilled_map.get(unfilled_key)
+                    if unfilled:
+                        row["teams"][team.id] = {
+                            "shift": shift.name,
+                            "person": "NEEDS COVERAGE",
+                            "person_id": None,
+                            "is_sub": False,
+                            "notes": "",
+                            "unfilled": True,
+                            "recommended_substitute_id": unfilled.get(
+                                "recommended_substitute_id"
+                            ),
+                            "recommended_substitute_name": unfilled.get(
+                                "recommended_substitute_name"
+                            ),
+                            "recommended_substitute_team_id": unfilled.get(
+                                "recommended_substitute_team_id"
+                            ),
+                            "reason": unfilled.get("reason"),
+                        }
+                    else:
+                        row["teams"][team.id] = {
+                            "shift": shift.name,
+                            "person": "UNASSIGNED",
+                            "person_id": None,
+                            "is_sub": False,
+                            "notes": "",
+                        }
 
         grid.append(row)
         current += __import__("datetime").timedelta(days=1)

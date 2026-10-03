@@ -84,6 +84,18 @@ CREATE TABLE IF NOT EXISTS shift_assignments (
     UNIQUE(schedule_date, shift_type, person_id)
 );
 
+CREATE TABLE IF NOT EXISTS unfilled_shifts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    schedule_date TEXT NOT NULL,
+    shift_type INTEGER NOT NULL CHECK (shift_type IN (1, 2, 3)),
+    team_id INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+    reason TEXT DEFAULT '',
+    recommended_substitute_id INTEGER REFERENCES persons(id) ON DELETE SET NULL,
+    recommended_substitute_team_id INTEGER REFERENCES teams(id) ON DELETE SET NULL,
+    created_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(schedule_date, shift_type, team_id)
+);
+
 CREATE TABLE IF NOT EXISTS shift_swaps (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     schedule_date TEXT NOT NULL,
@@ -683,6 +695,76 @@ class SQLiteRepository:
                 (person_id, start_date.isoformat(), end_date.isoformat()),
             ).fetchall()
             return [self._row_to_assignment(row) for row in rows]
+        finally:
+            conn.close()
+
+    def get_unfilled_shifts(self, start_date: date, end_date: date) -> list[dict]:
+        """Get unfilled shifts in date range with recommended substitutes."""
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                """SELECT us.*, 
+                       p.name as recommended_substitute_name,
+                       t.name as team_name
+                   FROM unfilled_shifts us
+                   LEFT JOIN persons p ON us.recommended_substitute_id = p.id
+                   LEFT JOIN teams t ON us.team_id = t.id
+                   WHERE us.schedule_date BETWEEN ? AND ?
+                   ORDER BY us.schedule_date, us.team_id, us.shift_type""",
+                (start_date.isoformat(), end_date.isoformat()),
+            ).fetchall()
+            return [dict(row) for row in rows]
+        finally:
+            conn.close()
+
+    def save_unfilled_shifts(self, unfilled_shifts: list[dict]) -> None:
+        """Save unfilled shifts (replace existing for date range)."""
+        if not unfilled_shifts:
+            return
+        conn = self._get_conn()
+        try:
+            # Get date range from unfilled shifts
+            dates = [u["date"] for u in unfilled_shifts]
+            min_date = min(dates)
+            max_date = max(dates)
+
+            # Delete existing unfilled shifts in range
+            conn.execute(
+                "DELETE FROM unfilled_shifts WHERE schedule_date BETWEEN ? AND ?",
+                (min_date, max_date),
+            )
+
+            # Insert new unfilled shifts
+            for u in unfilled_shifts:
+                conn.execute(
+                    """INSERT INTO unfilled_shifts 
+                       (schedule_date, shift_type, team_id, reason, 
+                        recommended_substitute_id, recommended_substitute_team_id)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (
+                        u["date"],
+                        u["shift"],  # shift_type as int (1, 2, 3)
+                        u["team_id"],
+                        u.get("reason", ""),
+                        u.get("recommended_substitute_id"),
+                        u.get("recommended_substitute_team_id"),
+                    ),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def delete_unfilled_shift(
+        self, schedule_date: str, team_id: int, shift_type: int
+    ) -> None:
+        """Delete a specific unfilled shift."""
+        conn = self._get_conn()
+        try:
+            conn.execute(
+                "DELETE FROM unfilled_shifts WHERE schedule_date = ? AND team_id = ? AND shift_type = ?",
+                (schedule_date, team_id, shift_type),
+            )
+            conn.commit()
         finally:
             conn.close()
 

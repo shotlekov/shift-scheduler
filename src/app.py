@@ -61,6 +61,10 @@ class ShiftSchedulerApp:
         self._build_ui()
         self._apply_theme()
 
+        # Default to admin role (no role selection dialog)
+        self.user_role = tk.StringVar(value="admin")
+        self._apply_role_permissions()
+
         # Load initial data
         self._on_load_notification_settings()
         self._refresh_all()
@@ -91,6 +95,12 @@ class ShiftSchedulerApp:
 
         self.sans_font = sans_font
         self.mono_font = mono_font
+
+        # Named fonts for consistent usage (defined here so available during UI build)
+        self.fUI = (self.sans_font, 10)  # Base UI font
+        self.fUIBold = (self.sans_font, 10, "bold")  # Bold UI font
+        self.fSmall = (self.sans_font, 9)  # Small headers (Use, Action, Weight, etc.)
+        self.fMono = (self.mono_font, 10)  # Monospace for code/markdown
 
         # Configure default fonts
         default_font = tkfont.nametofont("TkDefaultFont")
@@ -148,12 +158,6 @@ class ShiftSchedulerApp:
 
         # Configure root
         self.root.configure(background=palette["app"])
-
-        # Named fonts for consistent usage
-        self.fUI = (self.sans_font, 10)  # Base UI font
-        self.fUIBold = (self.sans_font, 10, "bold")  # Bold UI font
-        self.fSmall = (self.sans_font, 9)  # Small headers (Use, Action, Weight, etc.)
-        self.fMono = (self.mono_font, 10)  # Monospace for code/markdown
 
         # Base styles
         style.configure(
@@ -477,6 +481,301 @@ class ShiftSchedulerApp:
         # Configure tk widgets
         self._configure_tk_widgets(palette)
 
+    def _apply_role_permissions(self):
+        """Apply UI permissions based on user role."""
+        is_admin = self.user_role.get() == "admin"
+
+        # Hide/show tabs based on role
+        # For users, hide admin-only tabs: Teams & People, Availability, Shift Swaps, Notifications
+        if not is_admin:
+            # Get tab indices to hide
+            tabs_to_hide = [
+                "Teams & People",
+                "Availability",
+                "Shift Swaps",
+                "Notifications",
+            ]
+            for tab_name in tabs_to_hide:
+                for i in range(self.notebook.index("end")):
+                    if self.notebook.tab(i, "text") == tab_name:
+                        self.notebook.hide(i)
+                        break
+
+            # Disable schedule generation for users
+            if hasattr(self, "generate_btn"):
+                self.generate_btn.configure(state="disabled")
+
+            # Disable manual config for users
+            if hasattr(self, "apply_manual_btn"):
+                self.apply_manual_btn.configure(state="disabled")
+
+            # Add "My Requests" tab for users (placeholder for future)
+            self._add_user_requests_tab()
+
+    def _add_user_requests_tab(self):
+        """Add a tab for users to request time off/sick leave."""
+        # Create the tab if it doesn't exist
+        if hasattr(self, "requests_tab"):
+            return
+
+        self.requests_tab = ttk.Frame(self.notebook)
+        self.notebook.add(self.requests_tab, text="My Requests")
+
+        # Main paned window
+        paned = ttk.PanedWindow(self.requests_tab, orient="vertical")
+        paned.pack(fill="both", expand=True, padx=8, pady=8)
+
+        # Top panel - Submit new request
+        top_frame = ttk.LabelFrame(paned, text="Submit New Request")
+        paned.add(top_frame, weight=1)
+
+        # Request form
+        form_frame = ttk.Frame(top_frame)
+        form_frame.pack(fill="both", expand=True, padx=8, pady=8)
+
+        # Request type
+        ttk.Label(form_frame, text="Request Type:").grid(
+            row=0, column=0, sticky="w", pady=4
+        )
+        self.request_type_var = tk.StringVar(value="vacation")
+        ttk.Radiobutton(
+            form_frame,
+            text="Vacation (Planned)",
+            variable=self.request_type_var,
+            value="vacation",
+        ).grid(row=0, column=1, sticky="w", padx=8)
+        ttk.Radiobutton(
+            form_frame,
+            text="Sick Leave (Medical)",
+            variable=self.request_type_var,
+            value="sick",
+        ).grid(row=0, column=2, sticky="w", padx=8)
+
+        # Date range
+        ttk.Label(form_frame, text="Start Date:").grid(
+            row=1, column=0, sticky="w", pady=4
+        )
+        self.request_start_var = tk.StringVar(value=date.today().isoformat())
+        ttk.Entry(form_frame, textvariable=self.request_start_var, width=15).grid(
+            row=1, column=1, sticky="w", padx=8
+        )
+
+        ttk.Label(form_frame, text="End Date:").grid(
+            row=1, column=2, sticky="w", pady=4, padx=(16, 0)
+        )
+        self.request_end_var = tk.StringVar(value=date.today().isoformat())
+        ttk.Entry(form_frame, textvariable=self.request_end_var, width=15).grid(
+            row=1, column=3, sticky="w", padx=8
+        )
+
+        # Reason/Notes
+        ttk.Label(form_frame, text="Reason / Notes:").grid(
+            row=2, column=0, sticky="nw", pady=4
+        )
+        self.request_notes_text = tk.Text(form_frame, height=4, width=50, font=self.fUI)
+        self.request_notes_text.grid(
+            row=2, column=1, columnspan=3, sticky="ew", padx=8, pady=4
+        )
+
+        # Submit button
+        btn_frame = ttk.Frame(form_frame)
+        btn_frame.grid(row=3, column=0, columnspan=4, pady=12)
+        ttk.Button(
+            btn_frame,
+            text="Submit Request",
+            command=self._submit_request,
+            style="Accent.TButton",
+        ).pack(side="left", padx=4)
+
+        ttk.Button(
+            btn_frame,
+            text="Clear Form",
+            command=self._clear_request_form,
+        ).pack(side="left", padx=4)
+
+        form_frame.columnconfigure(1, weight=1)
+        form_frame.columnconfigure(3, weight=1)
+
+        # Bottom panel - My requests list
+        bottom_frame = ttk.LabelFrame(paned, text="My Requests")
+        paned.add(bottom_frame, weight=2)
+
+        # Requests treeview
+        req_columns = (
+            "id",
+            "type",
+            "start_date",
+            "end_date",
+            "status",
+            "reason",
+            "admin_notes",
+        )
+        self.requests_tree = ttk.Treeview(
+            bottom_frame, columns=req_columns, show="headings", height=10
+        )
+        self.requests_tree.heading("id", text="ID")
+        self.requests_tree.heading("type", text="Type")
+        self.requests_tree.heading("start_date", text="Start Date")
+        self.requests_tree.heading("end_date", text="End Date")
+        self.requests_tree.heading("status", text="Status")
+        self.requests_tree.heading("reason", text="Reason")
+        self.requests_tree.heading("admin_notes", text="Admin Notes")
+
+        self.requests_tree.column("id", width=50)
+        self.requests_tree.column("type", width=100)
+        self.requests_tree.column("start_date", width=100)
+        self.requests_tree.column("end_date", width=100)
+        self.requests_tree.column("status", width=100)
+        self.requests_tree.column("reason", width=200)
+        self.requests_tree.column("admin_notes", width=200)
+
+        req_v_scroll = ttk.Scrollbar(
+            bottom_frame, orient="vertical", command=self.requests_tree.yview
+        )
+        self.requests_tree.configure(yscrollcommand=req_v_scroll.set)
+        self.requests_tree.pack(side="left", fill="both", expand=True)
+        req_v_scroll.pack(side="right", fill="y")
+
+        # Configure tags
+        self.requests_tree.tag_configure(
+            "pending", background="#fff3e0", foreground="#e65100"
+        )
+        self.requests_tree.tag_configure(
+            "approved", background="#e8f5e9", foreground="#2e7d32"
+        )
+        self.requests_tree.tag_configure(
+            "rejected", background="#ffebee", foreground="#c62828"
+        )
+
+        # Load requests
+        self._load_user_requests()
+
+    def _submit_request(self):
+        """Submit a new time off/sick leave request."""
+        try:
+            start_date = date.fromisoformat(self.request_start_var.get())
+            end_date = date.fromisoformat(self.request_end_var.get())
+
+            if start_date > end_date:
+                messagebox.showerror(
+                    "Invalid Dates", "Start date must be before or equal to end date."
+                )
+                return
+
+            request_type = self.request_type_var.get()
+            notes = self.request_notes_text.get("1.0", "end-1c").strip()
+
+            if not notes:
+                messagebox.showerror(
+                    "Missing Reason", "Please provide a reason for your request."
+                )
+                return
+
+            # Save to database as availability exception with pending status
+            # We'll use the exceptions table with a special reason prefix
+            reason_prefix = f"[{request_type.upper()} REQUEST] "
+            full_reason = reason_prefix + notes
+
+            # For now, create as exception but with pending status
+            # In a full implementation, we'd have a separate requests table
+            from shiftcore.storage import get_repo
+
+            repo = get_repo()
+
+            # Get current user's person_id (for demo, use first active person)
+            persons = repo.get_persons(active_only=True)
+            if not persons:
+                messagebox.showerror("Error", "No active persons found.")
+                return
+
+            # For demo, use first person - in real app, this would be the logged-in user
+            person_id = persons[0].id
+
+            repo.create_exception(
+                person_id=person_id,
+                start_date=start_date,
+                end_date=end_date,
+                reason=full_reason,
+            )
+
+            messagebox.showinfo(
+                "Request Submitted",
+                f"Your {request_type} request from {start_date} to {end_date} has been submitted.\n"
+                f"An administrator will review and approve/reject it.",
+            )
+
+            self._clear_request_form()
+            self._load_user_requests()
+
+        except ValueError:
+            messagebox.showerror(
+                "Invalid Date", "Please enter valid dates in YYYY-MM-DD format."
+            )
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to submit request: {str(e)}")
+
+    def _clear_request_form(self):
+        """Clear the request form."""
+        self.request_start_var.set(date.today().isoformat())
+        self.request_end_var.set(date.today().isoformat())
+        self.request_notes_text.delete("1.0", "end")
+        self.request_type_var.set("vacation")
+
+    def _load_user_requests(self):
+        """Load and display user's requests."""
+        # Clear existing
+        for item in self.requests_tree.get_children():
+            self.requests_tree.delete(item)
+
+        try:
+            from shiftcore.storage import get_repo
+
+            repo = get_repo()
+
+            # Get all exceptions for the current user (demo: first person)
+            persons = repo.get_persons(active_only=True)
+            if not persons:
+                return
+            person_id = persons[0].id
+
+            # Get exceptions for a wide date range
+            start_date = date.today() - timedelta(days=365)
+            end_date = date.today() + timedelta(days=365)
+            exceptions = repo.get_exceptions(person_id, start_date, end_date)
+
+            for exc in exceptions:
+                # Parse request type from reason
+                reason = exc.reason
+                req_type = "Unknown"
+                clean_reason = reason
+                if reason.startswith("[VACATION REQUEST] "):
+                    req_type = "Vacation"
+                    clean_reason = reason[len("[VACATION REQUEST] ") :]
+                elif reason.startswith("[SICK REQUEST] "):
+                    req_type = "Sick Leave"
+                    clean_reason = reason[len("[SICK REQUEST] ") :]
+
+                # Determine status (for demo, all pending)
+                status = "Pending"
+                tag = "pending"
+
+                self.requests_tree.insert(
+                    "",
+                    "end",
+                    values=(
+                        exc.id,
+                        req_type,
+                        exc.start_date.isoformat(),
+                        exc.end_date.isoformat(),
+                        status,
+                        clean_reason,
+                        "",
+                    ),
+                    tags=(tag,),
+                )
+        except Exception as e:
+            print(f"Error loading requests: {e}")
+
     def _configure_tk_widgets(self, palette):
         """Configure tk widgets (Canvas, ScrolledText) that need manual updates."""
         # Update canvas backgrounds
@@ -611,15 +910,15 @@ class ShiftSchedulerApp:
         self.notebook = ttk.Notebook(main_container)
         self.notebook.pack(fill="both", expand=True)
 
+        # Schedule Grid tab (grid only) - FIRST TAB
+        self.schedule_grid_tab = ttk.Frame(self.notebook)
+        self.notebook.add(self.schedule_grid_tab, text="Schedule Grid")
+        self._build_schedule_grid_tab()
+
         # Schedule View tab (controls)
         self.schedule_tab = ttk.Frame(self.notebook)
         self.notebook.add(self.schedule_tab, text="Schedule View")
         self._build_schedule_tab()
-
-        # Schedule Grid tab (grid only)
-        self.schedule_grid_tab = ttk.Frame(self.notebook)
-        self.notebook.add(self.schedule_grid_tab, text="Schedule Grid")
-        self._build_schedule_grid_tab()
 
         # Teams tab
         self.teams_tab = ttk.Frame(self.notebook)
@@ -753,13 +1052,17 @@ class ShiftSchedulerApp:
         )
 
     def _build_schedule_grid_tab(self):
-        """Build the schedule grid tab with simplified view and search."""
-        # Main frame
-        main_frame = ttk.Frame(self.schedule_grid_tab)
-        main_frame.pack(fill="both", expand=True, padx=8, pady=8)
+        """Build the schedule grid tab with split view: grid on left, squad details on right."""
+        # Main paned window - horizontal split
+        paned = ttk.PanedWindow(self.schedule_grid_tab, orient="horizontal")
+        paned.pack(fill="both", expand=True, padx=8, pady=8)
+
+        # LEFT PANE - Schedule Grid
+        left_frame = ttk.Frame(paned)
+        paned.add(left_frame, weight=3)  # 3/4 of width
 
         # Search bar
-        search_frame = ttk.Frame(main_frame)
+        search_frame = ttk.Frame(left_frame)
         search_frame.pack(fill="x", pady=(0, 8))
 
         ttk.Label(search_frame, text="Search Person:").pack(side="left", padx=(0, 4))
@@ -777,7 +1080,7 @@ class ShiftSchedulerApp:
         )
 
         # Schedule grid
-        grid_frame = ttk.LabelFrame(main_frame, text="Schedule Grid (18 months)")
+        grid_frame = ttk.LabelFrame(left_frame, text="Schedule Grid (18 months)")
         grid_frame.pack(fill="both", expand=True)
 
         # Create treeview for schedule - simplified columns
@@ -815,16 +1118,64 @@ class ShiftSchedulerApp:
         # Configure zebra striping tags
         self.schedule_tree.tag_configure("oddrow", background="#f5f5f5")
         self.schedule_tree.tag_configure("evenrow", background="#ffffff")
+        # Tag for unfilled shifts (needs coverage)
+        self.schedule_tree.tag_configure(
+            "unfilled", background="#ffebee", foreground="#c62828"
+        )
 
-        # Bind events for tooltips
+        # Bind events for tooltips and click selection
         self.schedule_tree.bind("<Motion>", self._on_tree_motion)
         self.schedule_tree.bind("<Leave>", self._on_tree_leave)
         self.schedule_tree.bind("<Button-1>", self._on_tree_click)
+        self.schedule_tree.bind("<Double-1>", self._on_tree_double_click)
 
         # Tooltip window
         self.tooltip_window = None
         self.tooltip_item = None
         self.tooltip_col = None
+
+        # RIGHT PANE - Squad Details
+        right_frame = ttk.Frame(paned)
+        paned.add(right_frame, weight=1)  # 1/4 of width
+
+        # Squad details frame
+        squad_frame = ttk.LabelFrame(right_frame, text="Squad Details")
+        squad_frame.pack(fill="both", expand=True, padx=(8, 0))
+
+        # Header showing selected cell info
+        self.squad_header_var = tk.StringVar(value="Click a shift cell to view squad")
+        ttk.Label(
+            squad_frame,
+            textvariable=self.squad_header_var,
+            font=self.fUIBold,
+            wraplength=300,
+        ).pack(fill="x", padx=8, pady=8)
+
+        # Squad list treeview
+        squad_columns = ("name", "role")
+        self.squad_tree = ttk.Treeview(
+            squad_frame, columns=squad_columns, show="headings", height=20
+        )
+        self.squad_tree.heading("name", text="Name")
+        self.squad_tree.heading("role", text="Role")
+        self.squad_tree.column("name", width=200)
+        self.squad_tree.column("role", width=100)
+
+        squad_v_scroll = ttk.Scrollbar(
+            squad_frame, orient="vertical", command=self.squad_tree.yview
+        )
+        self.squad_tree.configure(yscrollcommand=squad_v_scroll.set)
+        self.squad_tree.pack(side="left", fill="both", expand=True)
+        squad_v_scroll.pack(side="right", fill="y")
+
+        # Configure zebra striping for squad tree
+        self.squad_tree.tag_configure("oddrow", background="#f5f5f5")
+        self.squad_tree.tag_configure("evenrow", background="#ffffff")
+        # Highlight assigned person
+        palette = self._get_palette()
+        self.squad_tree.tag_configure(
+            "assigned", background=palette["select"], foreground=palette["accent_text"]
+        )
 
     def _build_teams_tab(self):
         """Build the teams and people management tab."""
@@ -1807,12 +2158,22 @@ class ShiftSchedulerApp:
                     values.append("OFF")
                 else:
                     shift_text = team_data["shift"]
-                    if team_data["is_sub"]:
+                    if team_data.get("unfilled"):
+                        # Unfilled shift - needs coverage
+                        shift_text = "NEEDS COVERAGE"
+                    elif team_data["is_sub"]:
                         shift_text += " (S)"
                     values.append(shift_text)
 
-            # Apply zebra striping
-            tag = "evenrow" if i % 2 == 0 else "oddrow"
+            # Apply zebra striping, but use unfilled tag if any team in this row has unfilled shift
+            has_unfilled = any(
+                row["teams"].get(team["id"], {}).get("unfilled", False)
+                for team in teams
+            )
+            if has_unfilled:
+                tag = "unfilled"
+            else:
+                tag = "evenrow" if i % 2 == 0 else "oddrow"
             self.schedule_tree.insert("", "end", values=values, tags=(tag,))
 
     # Search handlers
@@ -1879,9 +2240,242 @@ class ShiftSchedulerApp:
         self._hide_tooltip()
 
     def _on_tree_click(self, event):
-        """Handle click on team cell - could expand to show details."""
-        # For now, just ensure tooltip is shown
-        pass
+        """Handle click on team cell - populate squad details in right pane."""
+        # Identify row and column under mouse
+        region = self.schedule_tree.identify("region", event.x, event.y)
+        if region != "cell":
+            return
+
+        row_id = self.schedule_tree.identify_row(event.y)
+        col_id = self.schedule_tree.identify_column(event.x)
+
+        if not row_id or not col_id:
+            return
+
+        # Skip date/day columns (col #1 and #2)
+        col_index = int(col_id.replace("#", ""))
+        if col_index <= 2:
+            return
+
+        # Get team index (col_index - 3 because date=1, day=2, team_1=3, etc.)
+        team_index = col_index - 3
+        teams = get_teams()
+        if team_index >= len(teams):
+            return
+
+        team = teams[team_index]
+        row_data = self.schedule_tree.item(row_id)
+        date_str = row_data["values"][0]
+        shift_text = row_data["values"][
+            col_index - 1
+        ]  # -1 because values array is 0-indexed
+
+        # Populate squad details in right pane
+        self._populate_squad_details(team, date_str, shift_text)
+
+    def _on_tree_double_click(self, event):
+        """Handle double-click on team cell - same as single click for now."""
+        self._on_tree_click(event)
+
+    def _populate_squad_details(self, team: dict, date_str: str, shift_text: str):
+        """Populate the right pane with squad details for the selected team/date/shift."""
+        # Update header
+        self.squad_header_var.set(f"{team['name']} - {date_str} - {shift_text}")
+
+        # Clear existing squad tree
+        for item in self.squad_tree.get_children():
+            self.squad_tree.delete(item)
+
+        # Clear any existing substitute action frame
+        if hasattr(self, "substitute_action_frame") and self.substitute_action_frame:
+            self.substitute_action_frame.destroy()
+            self.substitute_action_frame = None
+
+        try:
+            target_date = date.fromisoformat(date_str)
+            persons = get_people(active_only=True)
+            team_persons = [p for p in persons if p.get("team_id") == team["id"]]
+
+            if not team_persons:
+                return
+
+            # Check if this is an unfilled shift (NEEDS COVERAGE)
+            is_unfilled = shift_text == "NEEDS COVERAGE"
+            unfilled_info = None
+
+            if is_unfilled:
+                # Fetch unfilled shift info from database
+                unfilled_shifts = get_repo().get_unfilled_shifts(
+                    target_date, target_date
+                )
+                for u in unfilled_shifts:
+                    if u["team_id"] == team["id"] and u[
+                        "shift_type"
+                    ] == self._shift_name_to_int(shift_text):
+                        unfilled_info = u
+                        break
+
+            # Check assignments for this date
+            assignments = get_repo().get_assignments(target_date, target_date)
+            team_assignments = [a for a in assignments if a.team_id == team["id"]]
+
+            # Build a map of person_id -> assignment info for this team/date
+            assignment_map = {}
+            for a in team_assignments:
+                person = get_person(a.person_id)
+                shift_name = a.shift_type.name
+                sub_text = " (Substitute)" if a.is_substitute else ""
+                assignment_map[a.person_id] = {
+                    "shift": shift_name + sub_text,
+                    "status": "Assigned" + (" (Sub)" if a.is_substitute else ""),
+                    "person_name": person["name"] if person else "Unknown",
+                }
+
+            # Add all team members to squad tree
+            for i, p in enumerate(team_persons):
+                person_id = p["id"]
+                # Check if this person is assigned to the specific shift clicked
+                is_assigned_to_shift = False
+                if person_id in assignment_map:
+                    assign_info = assignment_map[person_id]
+                    # shift_text from grid is like "1st", "2nd", "3rd", "OFF", "1st (S)", etc.
+                    # Check if the assigned shift matches the clicked shift (ignoring substitute marker)
+                    assigned_shift = (
+                        assign_info["shift"]
+                        .replace(" (Substitute)", "")
+                        .replace(" (Sub)", "")
+                    )
+                    if shift_text.replace(" (S)", "") == assigned_shift:
+                        is_assigned_to_shift = True
+
+                # Use different tag for assigned person
+                if is_assigned_to_shift:
+                    tag = "assigned"
+                else:
+                    tag = "evenrow" if i % 2 == 0 else "oddrow"
+
+                self.squad_tree.insert(
+                    "",
+                    "end",
+                    values=(p["name"], p["role"]),
+                    tags=(tag,),
+                )
+
+            # If this is an unfilled shift, show recommended substitute and action buttons
+            if is_unfilled and unfilled_info:
+                self._show_substitute_action_panel(
+                    team, date_str, shift_text, unfilled_info
+                )
+
+        except Exception as e:
+            # Silently fail - just show empty squad
+            pass
+
+    def _shift_name_to_int(self, shift_name: str) -> int:
+        """Convert shift name to integer (1, 2, 3)."""
+        shift_map = {"FIRST": 1, "SECOND": 2, "THIRD": 3, "1st": 1, "2nd": 2, "3rd": 3}
+        return shift_map.get(shift_name.upper(), 1)
+
+    def _show_substitute_action_panel(
+        self, team: dict, date_str: str, shift_text: str, unfilled_info: dict
+    ):
+        """Show panel with recommended substitute and Apply/Cancel buttons."""
+        # Create action frame at the bottom of squad_frame
+        squad_frame = (
+            self.squad_tree.master.master
+        )  # squad_frame is parent of squad_tree
+
+        self.substitute_action_frame = ttk.Frame(squad_frame)
+        self.substitute_action_frame.pack(fill="x", padx=8, pady=8, side="bottom")
+
+        # Show recommended substitute info
+        rec_name = unfilled_info.get("recommended_substitute_name", "None")
+        rec_team_id = unfilled_info.get("recommended_substitute_team_id")
+        rec_team_name = ""
+        if rec_team_id:
+            rec_team = get_team(rec_team_id)
+            rec_team_name = f" (from {rec_team['name']})" if rec_team else ""
+
+        reason = unfilled_info.get("reason", "No available team members")
+
+        info_text = f"⚠ {reason}\nRecommended: {rec_name}{rec_team_name}"
+        ttk.Label(
+            self.substitute_action_frame,
+            text=info_text,
+            font=self.fSmall,
+            foreground="#c62828",
+            wraplength=280,
+            justify="left",
+        ).pack(anchor="w", pady=(0, 8))
+
+        # Buttons frame
+        btn_frame = ttk.Frame(self.substitute_action_frame)
+        btn_frame.pack(fill="x")
+
+        def apply_substitute():
+            """Apply the recommended substitute."""
+            sub_id = unfilled_info.get("recommended_substitute_id")
+            if not sub_id:
+                messagebox.showwarning(
+                    "No Substitute", "No recommended substitute available."
+                )
+                return
+
+            # Confirm with user
+            result = messagebox.askyesno(
+                "Apply Substitute",
+                f"Assign {rec_name}{rec_team_name} to {team['name']} {shift_text} on {date_str}?\n\n"
+                f"This will create a substitute assignment.",
+            )
+            if not result:
+                return
+
+            # Create the substitute assignment
+            # Use shift_type from unfilled_info (stored as int 1, 2, 3) instead of shift_text
+            shift_type_int = unfilled_info.get("shift_type", 1)
+            from shiftcore.models import ShiftAssignment, ShiftType
+            from shiftcore.storage import get_repo
+
+            assignment = ShiftAssignment(
+                schedule_date=date.fromisoformat(date_str),
+                shift_type=ShiftType(shift_type_int),
+                person_id=sub_id,
+                team_id=team["id"],
+                is_substitute=True,
+                substitute_for_id=None,
+                notes=f"Substitute from team {rec_team_id}"
+                if rec_team_id
+                else "Manual substitute assignment",
+            )
+
+            get_repo().save_assignment(assignment)
+
+            # Remove from unfilled shifts
+            get_repo().delete_unfilled_shift(date_str, team["id"], shift_type_int)
+
+            # Refresh schedule
+            self._on_load_schedule()
+            messagebox.showinfo(
+                "Success", f"Substitute {rec_name} assigned successfully!"
+            )
+
+        def cancel_substitute():
+            """Cancel - just close the panel."""
+            self.substitute_action_frame.destroy()
+            self.substitute_action_frame = None
+
+        ttk.Button(
+            btn_frame,
+            text="Apply Substitute",
+            command=apply_substitute,
+            style="Accent.TButton",
+        ).pack(side="left", padx=(0, 8))
+
+        ttk.Button(
+            btn_frame,
+            text="Cancel",
+            command=cancel_substitute,
+        ).pack(side="left")
 
     def _get_squad_for_team_date(self, team_id: int, date_str: str) -> str:
         """Get squad members for a team on a specific date."""
