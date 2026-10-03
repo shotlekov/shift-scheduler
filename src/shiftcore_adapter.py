@@ -693,9 +693,17 @@ def find_available_substitutes(
 
 
 def generate_schedule(
-    start_date: date, end_date: date, cycle_start: date, use_substitutes: bool = True
+    start_date: date,
+    end_date: date,
+    cycle_start: date,
+    use_substitutes: bool = True,
+    manual_overrides: dict = None,
 ):
-    """Generate a complete schedule for the date range."""
+    """Generate a complete schedule for the date range.
+
+    Args:
+        manual_overrides: Dict of {(team_id, date): shift_type} for manual first days config
+    """
     rotation = _get_repo().get_rotation_group()
     if not rotation:
         raise ValueError("No rotation group configured")
@@ -734,6 +742,26 @@ def generate_schedule(
         max_consecutive=MAX_CONSECUTIVE,
         fairness_engine=fairness,
     )
+
+    # Apply manual overrides for first 2 days
+    if manual_overrides:
+        for (team_id, config_date), shift_type in manual_overrides.items():
+            if start_date <= config_date <= end_date:
+                if shift_type == 0:  # OFF - remove any assignment for this team/date
+                    result.assignments = [
+                        a
+                        for a in result.assignments
+                        if not (a.team_id == team_id and a.schedule_date == config_date)
+                    ]
+                else:
+                    # Find and update the assignment for this team/date
+                    for assignment in result.assignments:
+                        if (
+                            assignment.team_id == team_id
+                            and assignment.schedule_date == config_date
+                        ):
+                            assignment.shift_type = ShiftType(shift_type)
+                            break
 
     # Save assignments to database
     _get_repo().save_assignments(result.assignments)

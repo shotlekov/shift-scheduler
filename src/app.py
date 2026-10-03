@@ -1726,7 +1726,11 @@ class ShiftSchedulerApp:
 
             def generate_schedule():
                 return generate_schedule(
-                    initial_date, end_date, cycle_start, use_substitutes=True
+                    initial_date,
+                    end_date,
+                    cycle_start,
+                    use_substitutes=True,
+                    manual_overrides=self.manual_first_days,
                 )
 
             def on_done(result):
@@ -1992,6 +1996,7 @@ class ShiftSchedulerApp:
                 person_id = create_person_unassigned(name, role, telegram, email)
                 if team_id:
                     assign_person_to_team(person_id, team_id)
+                self._refresh_teams()
                 self._refresh_people()
                 self._refresh_exception_people()
                 self._refresh_swap_people()
@@ -2031,6 +2036,7 @@ class ShiftSchedulerApp:
                 update_person(
                     person_id, name, team_id, role, person["active"], telegram, email
                 )
+                self._refresh_teams()
                 self._refresh_people()
                 self._refresh_exception_people()
                 self._refresh_swap_people()
@@ -2056,6 +2062,7 @@ class ShiftSchedulerApp:
         if result:
             try:
                 delete_person(person_id)
+                self._refresh_teams()
                 self._refresh_people()
                 self._refresh_exception_people()
                 self._refresh_swap_people()
@@ -2091,6 +2098,7 @@ class ShiftSchedulerApp:
                 person.get("telegram_chat_id", ""),
                 person.get("email", ""),
             )
+            self._refresh_teams()
             self._refresh_people()
             self._refresh_exception_people()
             self._refresh_swap_people()
@@ -2113,6 +2121,7 @@ class ShiftSchedulerApp:
                 csv_content = f.read()
 
             imported = import_people_from_csv(csv_content)
+            self._refresh_teams()
             self._refresh_people()
             self._refresh_exception_people()
             self._refresh_swap_people()
@@ -2139,6 +2148,7 @@ class ShiftSchedulerApp:
                 return generate_demo_people(15)
 
             def on_done(people):
+                self._refresh_teams()
                 self._refresh_people()
                 self._refresh_exception_people()
                 self._refresh_swap_people()
@@ -2154,6 +2164,10 @@ class ShiftSchedulerApp:
                 self._set_busy(False)
 
             self._run_in_background(generate, on_done, on_error)
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to generate demo people: {str(e)}")
+            self._set_busy(False)
 
         except Exception as e:
             messagebox.showerror("Error", f"Failed to generate demo people: {str(e)}")
