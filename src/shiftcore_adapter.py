@@ -180,6 +180,9 @@ def set_shift_model(shift_model: str) -> bool:
     if not rotation:
         # Create new rotation group with the model
         create_rotation_group("Default Rotation", shift_model, date.today())
+        rotation = _get_repo().get_rotation_group()
+        if rotation:
+            create_teams_for_rotation_group(rotation.id)
         return True
 
     # Check if model is actually changing
@@ -187,14 +190,34 @@ def set_shift_model(shift_model: str) -> bool:
         return True  # No change needed
 
     # Model is changing - need to regenerate teams and clear schedule
+    # Update rotation group with new model and correct pattern
+    model = SHIFT_MODELS[shift_model]
     rotation.shift_model = shift_model
-    _get_repo().update_rotation_group(rotation)
+    rotation.pattern = model["pattern"]
+    repo = _get_repo()
+    repo.update_rotation_group(rotation)
+
+    # Delete ALL teams from ALL rotation groups, then recreate for current
+    conn = repo._get_conn()
+    try:
+        conn.execute("DELETE FROM teams")
+        conn.commit()
+    finally:
+        conn.close()
 
     # Regenerate teams for the new model
     create_teams_for_rotation_group(rotation.id)
 
     # Clear all shift assignments (different team structure)
-    _get_repo().clear_assignments(date(1900, 1, 1), date(2100, 1, 1))
+    repo.clear_assignments(date(1900, 1, 1), date(2100, 1, 1))
+
+    # Also set all people to unassigned (team_id = NULL)
+    conn = repo._get_conn()
+    try:
+        conn.execute("UPDATE persons SET team_id = NULL")
+        conn.commit()
+    finally:
+        conn.close()
 
     return True
 
