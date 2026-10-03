@@ -79,9 +79,19 @@ pip install python-telegram-bot aiosmtplib
 
 1. Launch the application
 2. Configure your rotation group (2-shift or 3-shift model) — teams are auto-created
-3. Add people to each team
+3. Add people (unassigned by default, then assign to teams via dropdown)
 4. Set availability exceptions for people who are unavailable
 5. Generate a schedule
+6. View results in **Schedule Grid** tab with search and tooltips
+
+### Schedule Grid Tab
+
+The new **Schedule Grid** tab provides a clean, read-only view:
+- **Simplified columns**: DATE | DAY | TEAM 1 | TEAM 2 | TEAM 3... (shift only)
+- **Zebra striping** for readability
+- **Search bar** to filter by person name
+- **Hover tooltips** showing squad members for each team/date
+- **18 months** of schedule from Initial Date
 
 ### Adapter Enhancements
 
@@ -165,15 +175,13 @@ The executable will be in `dist/shift-scheduler.exe`.
 1. **Desktop only**: Currently a desktop application. WebUI planned for future.
 2. **Single database**: Uses a local SQLite database. No multi-user support.
 3. **Manual notification setup**: Telegram bot token and SMTP credentials must be configured manually.
-4. **CSV import only via adapter**: CSV import is available through the adapter API, not yet exposed in the UI.
 
 ## Future Enhancements
 
 1. **WebUI**: Migrate to a web-based interface using FastAPI + React
 2. **Multi-user support**: Add authentication and concurrent editing
-3. **UI for CSV Import**: Expose CSV import and demo data generation in the UI
-4. **Mobile app**: Native mobile application for shift management
-5. **Advanced reporting**: Generate reports on shift distribution and fairness metrics
+3. **Mobile app**: Native mobile application for shift management
+4. **Advanced reporting**: Generate reports on shift distribution and fairness metrics
 
 ## License
 

@@ -5,13 +5,14 @@
 1. [Getting Started](#getting-started)
 2. [Main Window Overview](#main-window-overview)
 3. [Schedule View](#schedule-view)
-4. [Teams & People](#teams--people)
-5. [Availability Exceptions](#availability-exceptions)
-6. [Shift Swaps](#shift-swaps)
-7. [Notifications](#notifications)
-8. [Exporting Schedules](#exporting-schedules)
-9. [Tips & Best Practices](#tips--best-practices)
-10. [Troubleshooting](#troubleshooting)
+4. [Schedule Grid](#schedule-grid)
+5. [Teams & People](#teams--people)
+6. [Availability Exceptions](#availability-exceptions)
+7. [Shift Swaps](#shift-swaps)
+8. [Notifications](#notifications)
+9. [Exporting Schedules](#exporting-schedules)
+10. [Tips & Best Practices](#tips--best-practices)
+11. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -26,30 +27,32 @@
 
 2. **Configure your rotation group** (first time only):
    - The app creates a default rotation group automatically
-   - Go to **Schedule View** tab → set **Cycle Start** date
+   - Go to **Schedule View** tab → set **Initial Date (Cycle Start)**
    - Choose **Shift Model**: 2-shift or 3-shift
    - **Teams are auto-created** with correct offsets and colors
 
-3. **Add people to teams**:
+3. **Add people**:
    - Go to **Teams & People** tab
-   - Select a team in the left panel
    - Click **Add Person** in the right panel
-   - Enter name and role
+   - Enter name, Telegram, email, role
+   - Assign to a team via dropdown (or leave Unassigned)
 
 4. **Generate your first schedule**:
    - Go to **Schedule View** tab
-   - Set **Start Date** and **End Date**
+   - (Optional) Set manual shifts for first 2 days in the grid
    - Click **Generate Schedule**
+   - View results in **Schedule Grid** tab
 
 ---
 
 ## Main Window Overview
 
-The application has 5 tabs accessible from the top:
+The application has 6 tabs accessible from the top:
 
 | Tab | Purpose |
 |-----|---------|
-| **Schedule View** | View and generate shift schedules |
+| **Schedule View** | Configure and generate shift schedules |
+| **Schedule Grid** | View simplified schedule with search and tooltips |
 | **Teams & People** | Manage teams and team members |
 | **Availability** | Set unavailable periods (vacation, sick) |
 | **Shift Swaps** | Request and manage shift swaps |
@@ -66,39 +69,81 @@ The application has 5 tabs accessible from the top:
 
 ## Schedule View
 
+This tab contains all schedule configuration and generation controls.
+
 ### Schedule Controls
 
 | Field | Description |
 |-------|-------------|
-| **Start Date** | First date of schedule range (ISO format: YYYY-MM-DD) |
-| **End Date** | Last date of schedule range |
-| **Cycle Start** | Reference date for rotation cycle (must match rotation group) |
+| **Initial Date (Cycle Start)** | Reference date for rotation cycle (ISO format: YYYY-MM-DD) |
 | **Shift Model** | 2-shift (Day/Swing) or 3-shift (adds Night) |
-| **Load Schedule** | Loads existing assignments for the date range |
+| **Load Schedule** | Loads existing assignments for 18 months from Initial Date |
 
-### Schedule Grid
+### Manual First 2 Days Configuration
 
-The grid shows:
-- **Rows**: Each date in the range
-- **Columns**: Date, Day of week, one column per team
-- **Cells**: Show shift (1st/2nd/3rd/OFF) and assigned person
-- **Substitute indicator**: "(S)" after name means substitute
+Below the controls, a grid allows you to manually set shifts for the first 2 days of the cycle:
 
-**Color coding:**
-- Light theme: Alternating row colors for readability
-- Dark theme: Slate-based color scheme
+- **Rows**: Each team
+- **Columns**: Day 1, Day 2 (with dates shown)
+- **Options**: AUTO (use rotation), 1st, 2nd, 3rd, OFF
+- **Apply Manual Configuration** button regenerates the full 18-month schedule with your overrides
 
-### Date Details Panel (Right Side)
+### Actions
 
-Click any date row to see:
-- All shifts and assignments for that date
-- Substitutions and conflicts
+| Button | Action |
+|--------|--------|
+| **Generate Schedule** | Creates new 18-month schedule from Initial Date |
+| **Export CSV** | Exports current schedule to CSV |
+| **Refresh Grid** | Reloads schedule data in Schedule Grid tab |
 
-### Person Details Panel
+### Status Bar
 
-Select a person from dropdown → **View Schedule** to see:
-- Their personal schedule for the date range
-- Shift times, team, substitute status, notes
+Shows current operation status at the bottom of the tab.
+
+---
+
+## Schedule Grid
+
+This tab provides a clean, read-only view of the generated schedule with powerful filtering and inspection tools.
+
+### Grid Layout
+
+| Column | Description |
+|--------|-------------|
+| **Date** | Schedule date (YYYY-MM-DD) |
+| **Day** | Day of week (Monday, Tuesday, etc.) |
+| **Team 1** | Shift for Team 1 (1st/2nd/3rd/OFF) |
+| **Team 2** | Shift for Team 2 |
+| **Team 3...** | Additional teams based on shift model |
+
+**Features:**
+- **Zebra striping** — Alternating row colors for readability
+- **18 months** — Shows ~548 days from Initial Date
+- **Shift only** — Cells show shift type (1st/2nd/3rd/OFF), not person names
+- **Substitute indicator** — "(S)" after shift means substitute assigned
+
+### Search Bar
+
+Type a person's name to filter the grid:
+- Only rows where that person is assigned will show
+- Works across all teams and dates
+- Clear button resets the filter
+
+### Hover Tooltips
+
+Hover over any team cell to see a popup with squad details:
+- Team name and date
+- All assigned members for that shift
+- Substitute status if applicable
+- Default squad members if no assignment exists
+
+### Keyboard Navigation
+
+- `Tab` / `Shift+Tab` — Navigate between cells
+- `Arrow keys` — Move between rows/columns
+- `Escape` — Clear search filter
+
+---
 
 ---
 
@@ -106,32 +151,52 @@ Select a person from dropdown → **View Schedule** to see:
 
 ### Teams Panel (Left)
 
-**Columns:** ID, Name, Color
+**Columns:** ID, Name, Color, Offset, Members
 
 **Actions:**
-- **Add Team** — Create new team (manual, for custom setups)
-- **Edit Team** — Modify name, color, offset
-- **Delete Team** — Removes team and all members
-- **Auto-Create Teams** — Regenerates teams for current rotation group with correct offsets/colors
+- **Regenerate Teams** — Recreates teams for current rotation group with correct offsets/colors
+  - 2-shift (6-day cycle): 3 teams with offsets 0, 2, 4
+  - 3-shift (10-day cycle): 5 teams with offsets 0, 2, 4, 6, 8
+- Teams are **auto-generated** — no manual Add/Edit/Delete
 
 **Team Offset:**
 - Determines where team starts in rotation cycle
-- **Auto-assigned** when using Auto-Create Teams:
-  - 2-shift (6-day cycle): Offsets 0, 2, 4 for 3 teams
-  - 3-shift (10-day cycle): Offsets 0, 2, 4, 6, 8 for 5 teams
+- **Auto-assigned** when using Regenerate Teams
 - Offset 0 = starts on 1st shift (days 0,1)
 - Offset 2 = starts on 2nd shift (days 2,3)
 - Offset 4 = starts on OFF days (days 4,5)
+- **Members** column shows count of assigned people
 
 ### People Panel (Right)
 
-**Columns:** ID, Name, Team, Role, Active
+**Columns:** ID, Name, Telegram, Email, Team, Role, Active
+
+**People are created unassigned** — assign to teams via dropdown.
 
 **Actions:**
-- **Add Person** — Add to selected team
-- **Edit Person** — Change name, role
+- **Add Person** — Creates unassigned person (Team = Unassigned)
+  - Fields: Name, Telegram Chat ID, Email, Role, Team (dropdown)
+- **Edit Person** — Modify any field including team assignment
 - **Delete Person** — Remove person
 - **Toggle Active** — Activate/deactivate (inactive people won't be scheduled)
+- **Import CSV** — Import people from CSV file
+- **Generate Demo People** — Creates 15 test people for testing
+
+**Team Assignment:**
+- Dropdown shows "Unassigned" + all teams
+- Changing team updates member count in Teams panel instantly
+
+**Roles:** operator, lead, supervisor (extensible for future)
+
+### CSV Import Format
+
+```csv
+name,role,telegram,email
+Alice Smith,operator,user123,alice@example.com
+Bob Jones,lead,user456,bob@example.com
+```
+
+**Columns:** name (required), role (optional, defaults to "operator"), telegram (optional), email (optional)
 
 **Roles:** operator, lead, supervisor (customizable)
 
@@ -274,8 +339,8 @@ print(f"Generated {len(demo)} demo people")
 
 ### CSV Export
 
-1. Load or generate a schedule in **Schedule View**
-2. Click **Export CSV**
+1. Generate a schedule in **Schedule View**
+2. Click **Export CSV** (in Schedule View tab)
 3. Choose filename and location
 4. CSV includes:
    - Date, Day
@@ -288,6 +353,8 @@ Date,Day,Team 1 Shift,Team 1 Person,Team 1 Sub,Team 2 Shift,Team 2 Person,Team 2
 2026-01-01,Thursday,1st,Alice,No,2nd,Bob,No,OFF,,No
 2026-01-02,Friday,1st,Alice,No,2nd,Charlie,No,OFF,,No
 ```
+
+**Note:** The CSV export includes person names and substitute status, while the Schedule Grid tab shows only shift types for clarity.
 
 ---
 
