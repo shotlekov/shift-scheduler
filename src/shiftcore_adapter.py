@@ -79,8 +79,8 @@ def get_rotation_group():
 
 
 def create_rotation_group(
-    name: str, shift_model: str = "2-shift", cycle_start: date = None
-):
+    name: str, shift_model: str = "2-shift", cycle_start: Optional[date] = None
+) -> int:
     """Create a new rotation group."""
     if cycle_start is None:
         cycle_start = date.today()
@@ -111,6 +111,8 @@ def create_team(name: str, color: str = "#2563eb", initial_shift_offset: int = 0
         # Create default rotation group
         group_id = create_rotation_group("Default Rotation", "2-shift", date.today())
         rotation = _get_repo().get_rotation_group()
+        if not rotation:
+            raise ValueError("Failed to create rotation group")
 
     team = Team(
         name=name,
@@ -156,6 +158,45 @@ def get_all_team_member_counts(group_id: Optional[int] = None) -> dict[int, int]
 def get_shift_model_info(shift_model: str) -> dict:
     """Get information about a shift model."""
     return SHIFT_MODELS.get(shift_model, {})
+
+
+def get_current_shift_model() -> str:
+    """Get the currently active shift model from the rotation group."""
+    rotation = _get_repo().get_rotation_group()
+    if rotation:
+        return rotation.shift_model
+    return "2-shift"
+
+
+def set_shift_model(shift_model: str) -> bool:
+    """
+    Switch the shift model. This regenerates teams for the new model.
+    Returns True if successful, False otherwise.
+    """
+    if shift_model not in SHIFT_MODELS:
+        raise ValueError(f"Unknown shift model: {shift_model}")
+
+    rotation = _get_repo().get_rotation_group()
+    if not rotation:
+        # Create new rotation group with the model
+        create_rotation_group("Default Rotation", shift_model, date.today())
+        return True
+
+    # Check if model is actually changing
+    if rotation.shift_model == shift_model:
+        return True  # No change needed
+
+    # Model is changing - need to regenerate teams and clear schedule
+    rotation.shift_model = shift_model
+    _get_repo().update_rotation_group(rotation)
+
+    # Regenerate teams for the new model
+    create_teams_for_rotation_group(rotation.id)
+
+    # Clear all shift assignments (different team structure)
+    _get_repo().clear_assignments(date(1900, 1, 1), date(2100, 1, 1))
+
+    return True
 
 
 def create_person_unassigned(

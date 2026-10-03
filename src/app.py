@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).parent))  # src directory for adapter
 # Use shiftcore adapter instead of legacy db.py/scheduler.py
 from shiftcore_adapter import *
 from shiftcore_adapter import _to_dict
+from shiftcore import SHIFT_MODELS
 
 
 class ShiftSchedulerApp:
@@ -52,6 +53,9 @@ class ShiftSchedulerApp:
         self.selected_person_id = None
         self.schedule_data = []
         self.shift_model = tk.StringVar(value="2-shift")  # "2-shift" or "3-shift"
+
+        # Manual first 2 days configuration: {(team_id, date): shift_type}
+        self.manual_first_days = {}
 
         # Build UI
         self._build_ui()
@@ -671,38 +675,20 @@ class ShiftSchedulerApp:
         controls_frame = ttk.LabelFrame(left_frame, text="Schedule Controls")
         controls_frame.pack(fill="x", pady=(0, 8))
 
-        # Date range controls
+        # Initial date and model selection
         date_frame = ttk.Frame(controls_frame)
         date_frame.pack(fill="x", padx=8, pady=8)
 
-        ttk.Label(date_frame, text="Start Date:").grid(
+        ttk.Label(date_frame, text="Initial Date (Cycle Start):").grid(
             row=0, column=0, sticky="w", padx=(0, 4)
         )
-        self.start_date_var = tk.StringVar(value=date.today().isoformat())
-        ttk.Entry(date_frame, textvariable=self.start_date_var, width=12).grid(
+        self.initial_date_var = tk.StringVar(value=date.today().isoformat())
+        ttk.Entry(date_frame, textvariable=self.initial_date_var, width=12).grid(
             row=0, column=1, padx=(0, 16)
         )
 
-        ttk.Label(date_frame, text="End Date:").grid(
-            row=0, column=2, sticky="w", padx=(0, 4)
-        )
-        self.end_date_var = tk.StringVar(
-            value=(date.today() + timedelta(days=13)).isoformat()
-        )
-        ttk.Entry(date_frame, textvariable=self.end_date_var, width=12).grid(
-            row=0, column=3, padx=(0, 16)
-        )
-
-        ttk.Label(date_frame, text="Cycle Start:").grid(
-            row=0, column=4, sticky="w", padx=(0, 4)
-        )
-        self.cycle_start_var = tk.StringVar(value=date.today().isoformat())
-        ttk.Entry(date_frame, textvariable=self.cycle_start_var, width=12).grid(
-            row=0, column=5
-        )
-
         ttk.Label(date_frame, text="Shift Model:").grid(
-            row=0, column=6, sticky="w", padx=(16, 4)
+            row=0, column=2, sticky="w", padx=(0, 4)
         )
         self.shift_model_combo = ttk.Combobox(
             date_frame,
@@ -711,21 +697,33 @@ class ShiftSchedulerApp:
             state="readonly",
             width=10,
         )
-        self.shift_model_combo.grid(row=0, column=7, padx=(0, 16))
+        self.shift_model_combo.grid(row=0, column=3, padx=(0, 16))
         self.shift_model_combo.bind("<<ComboboxSelected>>", self._on_shift_model_change)
 
         ttk.Button(
             date_frame, text="Load Schedule", command=self._on_load_schedule
-        ).grid(row=0, column=8, padx=(16, 0))
+        ).grid(row=0, column=4, padx=(16, 0))
+
+        # Manual first 2 days configuration
+        manual_frame = ttk.LabelFrame(
+            controls_frame, text="Manual First 2 Days Configuration"
+        )
+        manual_frame.pack(fill="x", padx=8, pady=(0, 8))
+
+        # Create a grid for manual configuration: 2 dates x teams
+        self.manual_config_frame = ttk.Frame(manual_frame)
+        self.manual_config_frame.pack(fill="x", padx=8, pady=8)
+
+        # Will be populated in _refresh_manual_config()
+        self.manual_config_vars = {}  # {(team_id, day_offset): StringVar}
 
         # Schedule grid
-        grid_frame = ttk.LabelFrame(left_frame, text="Schedule Grid")
+        grid_frame = ttk.LabelFrame(left_frame, text="Schedule Grid (18 months)")
         grid_frame.pack(fill="both", expand=True, pady=(0, 8))
 
         # Create treeview for schedule (dynamic columns based on teams)
-        # Base columns: date, day - team columns added dynamically in _refresh_schedule_grid
         self.schedule_tree = ttk.Treeview(
-            grid_frame, columns=("date", "day"), show="headings", height=20
+            grid_frame, columns=("date", "day"), show="headings", height=25
         )
 
         # Define base headings (will add team columns dynamically)
@@ -810,19 +808,23 @@ class ShiftSchedulerApp:
         paned.add(left_frame, weight=1)
 
         # Teams list
-        teams_frame = ttk.LabelFrame(left_frame, text="Teams")
+        teams_frame = ttk.LabelFrame(left_frame, text="Teams (Auto-generated)")
         teams_frame.pack(fill="both", expand=True, pady=(0, 8))
 
-        columns = ("id", "name", "color")
+        columns = ("id", "name", "color", "offset", "members")
         self.teams_tree = ttk.Treeview(
             teams_frame, columns=columns, show="headings", height=10
         )
         self.teams_tree.heading("id", text="ID")
         self.teams_tree.heading("name", text="Name")
         self.teams_tree.heading("color", text="Color")
+        self.teams_tree.heading("offset", text="Offset")
+        self.teams_tree.heading("members", text="Members")
         self.teams_tree.column("id", width=50)
-        self.teams_tree.column("name", width=150)
+        self.teams_tree.column("name", width=120)
         self.teams_tree.column("color", width=80)
+        self.teams_tree.column("offset", width=60)
+        self.teams_tree.column("members", width=70)
 
         teams_v_scroll = ttk.Scrollbar(
             teams_frame, orient="vertical", command=self.teams_tree.yview
@@ -831,18 +833,12 @@ class ShiftSchedulerApp:
         self.teams_tree.grid(row=0, column=0, sticky="nsew")
         teams_v_scroll.grid(row=0, column=1, sticky="ns")
 
-        # Team buttons - use grid instead of pack to avoid geometry manager conflict
+        # Team buttons - only Regenerate Teams
         team_btn_frame = ttk.Frame(teams_frame)
         team_btn_frame.grid(row=1, column=0, columnspan=2, sticky="ew", pady=4)
 
-        ttk.Button(team_btn_frame, text="Add Team", command=self._on_add_team).pack(
-            side="left", padx=(0, 4)
-        )
-        ttk.Button(team_btn_frame, text="Edit Team", command=self._on_edit_team).pack(
-            side="left", padx=(0, 4)
-        )
         ttk.Button(
-            team_btn_frame, text="Delete Team", command=self._on_delete_team
+            team_btn_frame, text="Regenerate Teams", command=self._on_regenerate_teams
         ).pack(side="left")
 
         teams_frame.grid_rowconfigure(0, weight=1)
@@ -854,20 +850,24 @@ class ShiftSchedulerApp:
         paned.add(right_frame, weight=2)
 
         # People list
-        people_frame = ttk.LabelFrame(right_frame, text="Team Members")
+        people_frame = ttk.LabelFrame(right_frame, text="People (Assign to Teams)")
         people_frame.pack(fill="both", expand=True, pady=(0, 8))
 
-        columns = ("id", "name", "team", "role", "active")
+        columns = ("id", "name", "telegram", "email", "team", "role", "active")
         self.people_tree = ttk.Treeview(
             people_frame, columns=columns, show="headings", height=15
         )
         self.people_tree.heading("id", text="ID")
         self.people_tree.heading("name", text="Name")
+        self.people_tree.heading("telegram", text="Telegram")
+        self.people_tree.heading("email", text="Email")
         self.people_tree.heading("team", text="Team")
         self.people_tree.heading("role", text="Role")
         self.people_tree.heading("active", text="Active")
         self.people_tree.column("id", width=50)
         self.people_tree.column("name", width=150)
+        self.people_tree.column("telegram", width=100)
+        self.people_tree.column("email", width=150)
         self.people_tree.column("team", width=100)
         self.people_tree.column("role", width=100)
         self.people_tree.column("active", width=60)
@@ -888,7 +888,7 @@ class ShiftSchedulerApp:
         people_frame.grid_rowconfigure(0, weight=1)
         people_frame.grid_columnconfigure(0, weight=1)
 
-        # People buttons - use grid to avoid geometry manager conflict
+        # People buttons
         people_btn_frame = ttk.Frame(people_frame)
         people_btn_frame.grid(row=2, column=0, columnspan=2, sticky="ew", pady=4)
 
@@ -905,6 +905,16 @@ class ShiftSchedulerApp:
             people_btn_frame,
             text="Toggle Active",
             command=self._on_toggle_person_active,
+        ).pack(side="left", padx=(0, 4))
+        ttk.Button(
+            people_btn_frame,
+            text="Import CSV",
+            command=self._on_import_csv,
+        ).pack(side="left", padx=(0, 4))
+        ttk.Button(
+            people_btn_frame,
+            text="Generate Demo People",
+            command=self._on_generate_demo_people,
         ).pack(side="left")
 
         people_frame.grid_rowconfigure(2, weight=0)
@@ -1348,9 +1358,21 @@ class ShiftSchedulerApp:
             self.teams_tree.delete(item)
 
         teams = get_teams()
+        member_counts = get_all_team_member_counts()
         for team in teams:
+            member_count = member_counts.get(team["id"], 0)
+            # Show color as a colored square
+            color_display = f"  {team['color']}  "
             self.teams_tree.insert(
-                "", "end", values=(team["id"], team["name"], team["color"])
+                "",
+                "end",
+                values=(
+                    team["id"],
+                    team["name"],
+                    color_display,
+                    team["offset"],
+                    member_count,
+                ),
             )
 
     def _refresh_people(self):
@@ -1359,17 +1381,24 @@ class ShiftSchedulerApp:
             self.people_tree.delete(item)
 
         people = get_people(active_only=False)
+        teams = get_teams()
+        team_map = {t["id"]: t["name"] for t in teams}
+
         for person in people:
             # Get team name
-            team = get_team(person["team_id"])
-            team_name = team["name"] if team else "Unknown"
+            team_id = person.get("team_id")
+            team_name = team_map.get(team_id, "Unassigned") if team_id else "Unassigned"
             active_text = "Yes" if person["active"] else "No"
+            telegram = person.get("telegram_chat_id", "") or ""
+            email = person.get("email", "") or ""
             self.people_tree.insert(
                 "",
                 "end",
                 values=(
                     person["id"],
                     person["name"],
+                    telegram,
+                    email,
                     team_name,
                     person["role"],
                     active_text,
@@ -1379,14 +1408,19 @@ class ShiftSchedulerApp:
     def _refresh_exception_people(self):
         """Refresh the person combobox for exceptions."""
         people = get_people(active_only=False)
-        person_names = [
-            f"{p['name']} (Team {get_team(p['team_id'])['name'] if get_team(p['team_id']) else '?'})"
-            for p in people
-        ]
+        teams = get_teams()
+        team_map = {t["id"]: t["name"] for t in teams}
+
+        person_names = []
+        for p in people:
+            team_id = p.get("team_id")
+            team_name = team_map.get(team_id, "Unassigned") if team_id else "Unassigned"
+            person_names.append(f"{p['name']} (Team: {team_name})")
+
         self.exception_person_combo["values"] = person_names
         # Store mapping for lookup
         self._exception_person_map = {
-            f"{p['name']} (Team {get_team(p['team_id'])['name'] if get_team(p['team_id']) else '?'})": p[
+            f"{p['name']} (Team: {team_map.get(p.get('team_id'), 'Unassigned') if p.get('team_id') else 'Unassigned'})": p[
                 "id"
             ]
             for p in people
@@ -1400,6 +1434,21 @@ class ShiftSchedulerApp:
         self.swap_person_b_combo["values"] = person_names
         # Store mapping for lookup
         self._swap_person_map = {p["name"]: p["id"] for p in people}
+
+        # Update shift combo boxes based on current model
+        model = self.shift_model.get()
+        if model == "2-shift":
+            shift_values = ["1", "2"]
+        else:
+            shift_values = ["1", "2", "3"]
+        self.swap_shift_a_combo["values"] = shift_values
+        self.swap_shift_b_combo["values"] = shift_values
+        # Reset to first valid value
+        if shift_values:
+            self.swap_shift_a_var.set(shift_values[0])
+            self.swap_shift_b_var.set(
+                shift_values[1] if len(shift_values) > 1 else shift_values[0]
+            )
 
     def _refresh_exceptions(self):
         """Refresh the exceptions treeview."""
@@ -1445,29 +1494,27 @@ class ShiftSchedulerApp:
             )
 
     def _on_load_schedule(self):
-        """Load and display the schedule for the selected date range."""
+        """Load and display the schedule for 18 months from initial date."""
         try:
-            start_date = date.fromisoformat(self.start_date_var.get())
-            end_date = date.fromisoformat(self.end_date_var.get())
-            cycle_start = date.fromisoformat(self.cycle_start_var.get())
-
-            if start_date > end_date:
-                messagebox.showerror(
-                    "Invalid Date Range", "Start date must be before end date"
-                )
-                return
+            initial_date = date.fromisoformat(self.initial_date_var.get())
+            # Generate 18 months (approx 548 days)
+            end_date = initial_date + timedelta(days=547)
+            cycle_start = initial_date
 
             self._set_busy(True)
             self.status_var.set("Loading schedule...")
 
             def load_schedule():
-                return get_schedule_grid(start_date, end_date, cycle_start)
+                return get_schedule_grid(initial_date, end_date, cycle_start)
 
             def on_done(result):
                 self.schedule_data = result
                 self._setup_schedule_columns()
                 self._populate_schedule_tree()
-                self.status_var.set(f"Loaded schedule for {len(result)} days")
+                self._refresh_manual_config()  # Refresh manual config UI
+                self.status_var.set(
+                    f"Loaded schedule for {len(result)} days (18 months)"
+                )
                 self._set_busy(False)
 
             def on_error(exc):
@@ -1481,15 +1528,129 @@ class ShiftSchedulerApp:
             messagebox.showerror("Invalid Date", f"Please enter valid dates: {str(e)}")
 
     def _on_shift_model_change(self, event=None):
-        """Handle shift model change - update rotation group and refresh."""
+        """Handle shift model change - switch model, regenerate teams, clear schedule."""
         model = self.shift_model.get()
-        rotation = get_rotation_group()
-        if rotation:
-            # Update the rotation group's shift model
-            rotation.shift_model = model
-            # Save back to database
-            get_repo().update_rotation_group(rotation)
-        self._refresh_all()
+
+        # Confirm with user
+        result = messagebox.askyesno(
+            "Switch Shift Model",
+            f"Switching to {model} will:\n"
+            f"• Regenerate teams (3 teams for 2-shift, 5 for 3-shift)\n"
+            f"• Clear all existing shift assignments\n"
+            f"• People will become unassigned\n\n"
+            f"Continue?",
+        )
+        if not result:
+            # Revert combo box
+            current_model = get_current_shift_model()
+            self.shift_model.set(current_model)
+            return
+
+        try:
+            self._set_busy(True)
+            self.status_var.set(f"Switching to {model}...")
+
+            def switch_model():
+                return set_shift_model(model)
+
+            def on_done(success):
+                if success:
+                    self.status_var.set(f"Switched to {model}. Teams regenerated.")
+                    self._refresh_all()
+                else:
+                    self.status_var.set("Failed to switch model")
+                    messagebox.showerror("Error", "Failed to switch shift model")
+                self._set_busy(False)
+
+            def on_error(exc):
+                self.status_var.set(f"Error: {str(exc)}")
+                messagebox.showerror("Error", str(exc))
+                self._set_busy(False)
+
+            self._run_in_background(switch_model, on_done, on_error)
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to switch model: {str(e)}")
+            self._set_busy(False)
+
+    def _refresh_manual_config(self):
+        """Refresh the manual first 2 days configuration UI."""
+        # Clear existing widgets
+        for widget in self.manual_config_frame.winfo_children():
+            widget.destroy()
+
+        self.manual_config_vars = {}
+
+        teams = get_teams()
+        if not teams:
+            ttk.Label(self.manual_config_frame, text="No teams configured").pack(pady=8)
+            return
+
+        initial_date = date.fromisoformat(self.initial_date_var.get())
+
+        # Header row
+        ttk.Label(self.manual_config_frame, text="Team", font=self.fUIBold).grid(
+            row=0, column=0, padx=8, pady=4
+        )
+        for day_offset in range(2):
+            config_date = initial_date + timedelta(days=day_offset)
+            ttk.Label(
+                self.manual_config_frame,
+                text=f"Day {day_offset + 1}\n{config_date.strftime('%Y-%m-%d (%a)')}",
+                font=self.fUIBold,
+            ).grid(row=0, column=day_offset + 1, padx=8, pady=4)
+
+        # Team rows
+        for i, team in enumerate(teams):
+            ttk.Label(self.manual_config_frame, text=team["name"]).grid(
+                row=i + 1, column=0, padx=8, pady=4, sticky="w"
+            )
+
+            for day_offset in range(2):
+                config_date = initial_date + timedelta(days=day_offset)
+                var = tk.StringVar(value="AUTO")
+                self.manual_config_vars[(team["id"], day_offset)] = var
+
+                # Get shift options based on current model
+                model = self.shift_model.get()
+                if model == "2-shift":
+                    shift_options = ["AUTO", "1st", "2nd", "OFF"]
+                else:
+                    shift_options = ["AUTO", "1st", "2nd", "3rd", "OFF"]
+
+                combo = ttk.Combobox(
+                    self.manual_config_frame,
+                    textvariable=var,
+                    values=shift_options,
+                    state="readonly",
+                    width=8,
+                )
+                combo.grid(row=i + 1, column=day_offset + 1, padx=8, pady=4)
+                combo.bind(
+                    "<<ComboboxSelected>>",
+                    lambda e, t=team["id"], d=day_offset: self._on_manual_config_change(
+                        t, d
+                    ),
+                )
+
+    def _on_manual_config_change(self, team_id: int, day_offset: int):
+        """Handle manual configuration change."""
+        var = self.manual_config_vars.get((team_id, day_offset))
+        if var:
+            value = var.get()
+            initial_date = date.fromisoformat(self.initial_date_var.get())
+            config_date = initial_date + timedelta(days=day_offset)
+
+            if value == "AUTO":
+                # Remove manual override
+                self.manual_first_days.pop((team_id, config_date), None)
+            else:
+                # Store manual override
+                shift_map = {"1st": 1, "2nd": 2, "3rd": 3, "OFF": 0}
+                self.manual_first_days[(team_id, config_date)] = shift_map.get(value, 0)
+
+            # Reload schedule to reflect changes
+            self._on_load_schedule()
 
     def _setup_schedule_columns(self):
         """Set up schedule tree columns dynamically based on teams."""
@@ -1546,20 +1707,15 @@ class ShiftSchedulerApp:
     def _on_generate_schedule(self):
         """Generate a new schedule based on current teams and people."""
         try:
-            start_date = date.fromisoformat(self.start_date_var.get())
-            end_date = date.fromisoformat(self.end_date_var.get())
-            cycle_start = date.fromisoformat(self.cycle_start_var.get())
-
-            if start_date > end_date:
-                messagebox.showerror(
-                    "Invalid Date Range", "Start date must be before end date"
-                )
-                return
+            initial_date = date.fromisoformat(self.initial_date_var.get())
+            end_date = initial_date + timedelta(days=547)  # 18 months
+            cycle_start = initial_date
 
             result = messagebox.askyesno(
                 "Generate Schedule",
-                f"This will generate a schedule from {start_date} to {end_date}.\n"
+                f"This will generate a schedule from {initial_date} to {end_date} (18 months).\n"
                 f"All existing assignments in this range will be cleared.\n"
+                f"Manual first 2 days configuration will be applied.\n"
                 f"Continue?",
             )
             if not result:
@@ -1570,7 +1726,7 @@ class ShiftSchedulerApp:
 
             def generate_schedule():
                 return generate_schedule(
-                    start_date, end_date, cycle_start, use_substitutes=True
+                    initial_date, end_date, cycle_start, use_substitutes=True
                 )
 
             def on_done(result):
@@ -1613,52 +1769,38 @@ class ShiftSchedulerApp:
         try:
             import csv
 
+            teams = get_teams()
+
             with open(filename, "w", newline="", encoding="utf-8") as csvfile:
                 writer = csv.writer(csvfile)
                 # Write header
-                writer.writerow(
-                    [
-                        "Date",
-                        "Day",
-                        "Team 1 Shift",
-                        "Team 1 Person",
-                        "Team 1 Sub",
-                        "Team 2 Shift",
-                        "Team 2 Person",
-                        "Team 2 Sub",
-                        "Team 3 Shift",
-                        "Team 3 Person",
-                        "Team 3 Sub",
-                    ]
-                )
+                header = ["Date", "Day"]
+                for team in teams:
+                    header.extend(
+                        [
+                            f"{team['name']} Shift",
+                            f"{team['name']} Person",
+                            f"{team['name']} Sub",
+                        ]
+                    )
+                writer.writerow(header)
 
                 # Write data
                 for row in self.schedule_data:
-                    team1 = row["teams"].get(
-                        1, {"shift": "OFF", "person": "", "is_sub": False}
-                    )
-                    team2 = row["teams"].get(
-                        2, {"shift": "OFF", "person": "", "is_sub": False}
-                    )
-                    team3 = row["teams"].get(
-                        3, {"shift": "OFF", "person": "", "is_sub": False}
-                    )
-
-                    writer.writerow(
-                        [
-                            row["date"],
-                            row["day_name"],
-                            team1["shift"],
-                            team1["person"],
-                            "Yes" if team1["is_sub"] else "No",
-                            team2["shift"],
-                            team2["person"],
-                            "Yes" if team2["is_sub"] else "No",
-                            team3["shift"],
-                            team3["person"],
-                            "Yes" if team3["is_sub"] else "No",
-                        ]
-                    )
+                    row_data = [row["date"], row["day_name"]]
+                    for team in teams:
+                        team_data = row["teams"].get(
+                            team["id"],
+                            {"shift": "OFF", "person": "", "is_sub": False},
+                        )
+                        row_data.extend(
+                            [
+                                team_data["shift"],
+                                team_data["person"],
+                                "Yes" if team_data["is_sub"] else "No",
+                            ]
+                        )
+                    writer.writerow(row_data)
 
             messagebox.showinfo("Export Complete", f"Schedule exported to {filename}")
             self.status_var.set(f"Exported to {filename}")
@@ -1681,15 +1823,15 @@ class ShiftSchedulerApp:
             return
 
         try:
-            start_date = date.fromisoformat(self.start_date_var.get())
-            end_date = date.fromisoformat(self.end_date_var.get())
+            initial_date = date.fromisoformat(self.initial_date_var.get())
+            end_date = initial_date + timedelta(days=547)  # 18 months
 
             self._set_busy(True)
             self.status_var.set("Loading person schedule...")
 
             def load_person_schedule():
                 return get_person_schedule(
-                    self.selected_person_id, start_date, end_date
+                    self.selected_person_id, initial_date, end_date
                 )
 
             def on_done(result):
@@ -1793,29 +1935,68 @@ class ShiftSchedulerApp:
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to delete team: {str(e)}")
 
-    # Person management handlers
-    def _on_add_person(self):
-        """Handle adding a new person."""
-        selection = self.teams_tree.selection()
-        if not selection:
-            messagebox.showwarning("No Team Selected", "Please select a team first")
+    # Team management handlers
+    def _on_regenerate_teams(self):
+        """Regenerate teams for the current rotation group based on shift model."""
+        rotation = get_rotation_group()
+        if not rotation:
+            messagebox.showwarning(
+                "No Rotation Group", "Please create a rotation group first"
+            )
             return
 
-        item = self.teams_tree.item(selection[0])
-        team_id = item["values"][0]
-        team_name = item["values"][1]
+        result = messagebox.askyesno(
+            "Regenerate Teams",
+            f"This will regenerate teams for the {rotation.shift_model} model:\n"
+            f"• {SHIFT_MODELS[rotation.shift_model]['team_count']} teams will be created\n"
+            f"• Existing teams will be deleted\n"
+            f"• People assigned to teams will become unassigned\n\n"
+            f"Continue?",
+        )
+        if not result:
+            return
 
-        dialog = PersonDialog(self.root, "Add Person", team_id=team_id)
-        if dialog.result:
-            name, role = dialog.result
-            try:
-                person_id = create_person(name, team_id, role)
+        try:
+            self._set_busy(True)
+            self.status_var.set("Regenerating teams...")
+
+            def regenerate():
+                return create_teams_for_rotation_group(rotation.id)
+
+            def on_done(teams):
+                self.status_var.set(f"Regenerated {len(teams)} teams")
+                self._refresh_teams()
                 self._refresh_people()
                 self._refresh_exception_people()
                 self._refresh_swap_people()
-                self.status_var.set(
-                    f"Person '{name}' added to team '{team_name}' successfully"
-                )
+                self._set_busy(False)
+
+            def on_error(exc):
+                self.status_var.set(f"Error: {str(exc)}")
+                messagebox.showerror("Error", str(exc))
+                self._set_busy(False)
+
+            self._run_in_background(regenerate, on_done, on_error)
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to regenerate teams: {str(e)}")
+            self._set_busy(False)
+
+    # Person management handlers
+    def _on_add_person(self):
+        """Handle adding a new person (unassigned initially)."""
+        dialog = PersonDialog(self.root, "Add Person")
+        if dialog.result:
+            name, telegram, email, role, team_id = dialog.result
+            try:
+                person_id = create_person_unassigned(name, role, telegram, email)
+                if team_id:
+                    assign_person_to_team(person_id, team_id)
+                self._refresh_people()
+                self._refresh_exception_people()
+                self._refresh_swap_people()
+                team_name = get_team(team_id)["name"] if team_id else "Unassigned"
+                self.status_var.set(f"Person '{name}' added to {team_name}")
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to add person: {str(e)}")
 
@@ -1839,14 +2020,16 @@ class ShiftSchedulerApp:
             "Edit Person",
             person_id=person_id,
             name=person["name"],
+            telegram=person.get("telegram_chat_id", ""),
+            email=person.get("email", ""),
             role=person["role"],
+            team_id=person.get("team_id"),
         )
         if dialog.result:
-            name, role = dialog.result
+            name, telegram, email, role, team_id = dialog.result
             try:
-                # Keep the same team
                 update_person(
-                    person_id, name, person["team_id"], role, person["active"]
+                    person_id, name, team_id, role, person["active"], telegram, email
                 )
                 self._refresh_people()
                 self._refresh_exception_people()
@@ -1900,7 +2083,13 @@ class ShiftSchedulerApp:
 
         try:
             update_person(
-                person_id, person["name"], person["team_id"], person["role"], new_status
+                person_id,
+                person["name"],
+                person["team_id"],
+                person["role"],
+                new_status,
+                person.get("telegram_chat_id", ""),
+                person.get("email", ""),
             )
             self._refresh_people()
             self._refresh_exception_people()
@@ -1908,6 +2097,67 @@ class ShiftSchedulerApp:
             self.status_var.set(f"Person '{person['name']}' {status_text} successfully")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to update person: {str(e)}")
+
+    def _on_import_csv(self):
+        """Import people from CSV file."""
+        filename = filedialog.askopenfilename(
+            defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+            title="Import People from CSV",
+        )
+        if not filename:
+            return
+
+        try:
+            with open(filename, "r", encoding="utf-8") as f:
+                csv_content = f.read()
+
+            imported = import_people_from_csv(csv_content)
+            self._refresh_people()
+            self._refresh_exception_people()
+            self._refresh_swap_people()
+            messagebox.showinfo("Import Complete", f"Imported {len(imported)} people")
+            self.status_var.set(f"Imported {len(imported)} people from CSV")
+        except Exception as e:
+            messagebox.showerror("Import Error", f"Failed to import CSV: {str(e)}")
+
+    def _on_generate_demo_people(self):
+        """Generate demo people for testing."""
+        result = messagebox.askyesno(
+            "Generate Demo People",
+            "This will generate 15 demo people with random names, roles, and contact info.\n"
+            "They will be created as unassigned (no team).\n\nContinue?",
+        )
+        if not result:
+            return
+
+        try:
+            self._set_busy(True)
+            self.status_var.set("Generating demo people...")
+
+            def generate():
+                return generate_demo_people(15)
+
+            def on_done(people):
+                self._refresh_people()
+                self._refresh_exception_people()
+                self._refresh_swap_people()
+                self.status_var.set(f"Generated {len(people)} demo people")
+                self._set_busy(False)
+                messagebox.showinfo(
+                    "Demo People Generated", f"Created {len(people)} demo people"
+                )
+
+            def on_error(exc):
+                self.status_var.set(f"Error: {str(exc)}")
+                messagebox.showerror("Error", str(exc))
+                self._set_busy(False)
+
+            self._run_in_background(generate, on_done, on_error)
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to generate demo people: {str(e)}")
+            self._set_busy(False)
 
     # Exception handlers
     def _on_exception_person_selected(self, event=None):
@@ -2130,16 +2380,23 @@ class TeamDialog:
 
 class PersonDialog:
     def __init__(
-        self, parent, title, team_id=None, person_id=None, name="", role="operator"
+        self,
+        parent,
+        title,
+        person_id=None,
+        name="",
+        telegram="",
+        email="",
+        role="operator",
+        team_id=None,
     ):
         self.result = None
-        self.team_id = team_id
         self.person_id = person_id
 
         # Create dialog window
         self.dialog = tk.Toplevel(parent)
         self.dialog.title(title)
-        self.dialog.geometry("350x220")
+        self.dialog.geometry("400x400")
         self.dialog.resizable(False, False)
         self.dialog.transient(parent)
         self.dialog.grab_set()
@@ -2149,15 +2406,49 @@ class PersonDialog:
             "+%d+%d" % (parent.winfo_rootx() + 50, parent.winfo_rooty() + 50)
         )
 
+        # Get teams for dropdown
+        teams = get_teams()
+        team_options = ["Unassigned"] + [t["name"] for t in teams]
+        team_map = {t["name"]: t["id"] for t in teams}
+        reverse_team_map = {t["id"]: t["name"] for t in teams}
+
         # Name
         ttk.Label(self.dialog, text="Person Name:").pack(pady=(10, 0))
         self.name_var = tk.StringVar(value=name)
-        ttk.Entry(self.dialog, textvariable=self.name_var, width=30).pack(pady=(0, 10))
+        ttk.Entry(self.dialog, textvariable=self.name_var, width=35).pack(pady=(0, 8))
+
+        # Telegram
+        ttk.Label(self.dialog, text="Telegram Chat ID:").pack(pady=(0, 0))
+        self.telegram_var = tk.StringVar(value=telegram)
+        ttk.Entry(self.dialog, textvariable=self.telegram_var, width=35).pack(
+            pady=(0, 8)
+        )
+
+        # Email
+        ttk.Label(self.dialog, text="Email:").pack(pady=(0, 0))
+        self.email_var = tk.StringVar(value=email)
+        ttk.Entry(self.dialog, textvariable=self.email_var, width=35).pack(pady=(0, 8))
 
         # Role
         ttk.Label(self.dialog, text="Role:").pack(pady=(0, 0))
         self.role_var = tk.StringVar(value=role)
-        ttk.Entry(self.dialog, textvariable=self.role_var, width=30).pack(pady=(0, 10))
+        ttk.Entry(self.dialog, textvariable=self.role_var, width=35).pack(pady=(0, 8))
+
+        # Team dropdown
+        ttk.Label(self.dialog, text="Team:").pack(pady=(0, 0))
+        self.team_var = tk.StringVar()
+        current_team = (
+            reverse_team_map.get(team_id, "Unassigned") if team_id else "Unassigned"
+        )
+        self.team_var.set(current_team)
+        team_combo = ttk.Combobox(
+            self.dialog,
+            textvariable=self.team_var,
+            values=team_options,
+            state="readonly",
+            width=32,
+        )
+        team_combo.pack(pady=(0, 10))
 
         # Buttons
         btn_frame = ttk.Frame(self.dialog)
@@ -2177,7 +2468,10 @@ class PersonDialog:
 
     def _on_ok(self):
         name = self.name_var.get().strip()
+        telegram = self.telegram_var.get().strip() or None
+        email = self.email_var.get().strip() or None
         role = self.role_var.get().strip()
+        team_name = self.team_var.get()
 
         if not name:
             messagebox.showerror("Validation Error", "Person name cannot be empty")
@@ -2186,7 +2480,12 @@ class PersonDialog:
         if not role:
             role = "operator"
 
-        self.result = (name, role)
+        # Get team_id from team_name
+        teams = get_teams()
+        team_map = {t["name"]: t["id"] for t in teams}
+        team_id = team_map.get(team_name) if team_name != "Unassigned" else None
+
+        self.result = (name, telegram, email, role, team_id)
         self.dialog.destroy()
 
     def _on_cancel(self):
