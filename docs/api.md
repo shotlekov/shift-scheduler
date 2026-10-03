@@ -31,6 +31,7 @@ from shiftcore import (
     NotificationFailed, RotationError, StorageError,
     # Constants
     SHIFT_DEFINITIONS, MAX_CONSECUTIVE, DEFAULT_PATTERNS,
+    SHIFT_MODELS, TEAM_COLORS,
 )
 ```
 
@@ -67,6 +68,21 @@ class RotationGroup:
 
     def get_shift_for_offset(self, offset: int, target_date: date) -> ShiftType:
         """Get shift type for a team at given offset on target date."""
+
+    @classmethod
+    def create_default(
+        cls, name: str, shift_model: str, cycle_start: date
+    ) -> "RotationGroup":
+        """Create a rotation group with default pattern for the shift model."""
+
+    def get_team_count(self) -> int:
+        """Get the required number of teams for this shift model."""
+
+    def get_shifts(self) -> list[ShiftType]:
+        """Get the shift types used in this model."""
+
+    def get_max_consecutive(self) -> dict[ShiftType, int]:
+        """Get max consecutive shifts per shift type."""
 ```
 
 ### Team
@@ -217,6 +233,64 @@ DEFAULT_PATTERNS = {
     "3-shift": [1, 1, 2, 2, 0, 0, 3, 3, 0, 0], # 10 days
 }
 ```
+
+### SHIFT_MODELS
+
+Centralized configuration for all shift models:
+
+```python
+SHIFT_MODELS = {
+    "2-shift": {
+        "name": "2-Shift (Day/Swing)",
+        "pattern": [1, 1, 2, 2, 0, 0],
+        "pattern_length": 6,
+        "team_count": 3,
+        "shifts": [ShiftType.FIRST, ShiftType.SECOND],
+        "max_consecutive": {ShiftType.FIRST: 5, ShiftType.SECOND: 5},
+    },
+    "3-shift": {
+        "name": "3-Shift (Day/Swing/Night)",
+        "pattern": [1, 1, 2, 2, 0, 0, 3, 3, 0, 0],
+        "pattern_length": 10,
+        "team_count": 5,
+        "shifts": [ShiftType.FIRST, ShiftType.SECOND, ShiftType.THIRD],
+        "max_consecutive": {
+            ShiftType.FIRST: 5,
+            ShiftType.SECOND: 5,
+            ShiftType.THIRD: 3,
+        },
+    },
+}
+```
+
+**Usage:**
+```python
+from shiftcore import SHIFT_MODELS, RotationGroup
+
+# Get model info
+model = SHIFT_MODELS["3-shift"]
+print(model["team_count"])  # 5
+print(model["max_consecutive"][ShiftType.THIRD])  # 3
+
+# Create rotation group with defaults
+rotation = RotationGroup.create_default("My Rotation", "3-shift", date(2026, 1, 1))
+```
+
+### TEAM_COLORS
+
+Default color palette for auto-assigned teams:
+
+```python
+TEAM_COLORS = [
+    "#ef4444",  # Red - Team 1
+    "#3b82f6",  # Blue - Team 2
+    "#22c55e",  # Green - Team 3
+    "#f59e0b",  # Amber - Team 4
+    "#a855f7",  # Purple - Team 5
+]
+```
+
+Used automatically when creating teams for a rotation group.
 
 ---
 
@@ -589,7 +663,7 @@ class SQLiteRepository:
     def delete_rotation_group(self, group_id: int) -> None:
         """Delete rotation group."""
 
-    # Teams
+# Teams
     def get_teams(self, group_id: Optional[int] = None) -> list[Team]:
         """Get all teams, optionally filtered by rotation group."""
 
@@ -604,6 +678,18 @@ class SQLiteRepository:
 
     def delete_team(self, team_id: int) -> None:
         """Delete team."""
+
+    def create_teams_for_rotation_group(self, rotation_group_id: int) -> list[Team]:
+        """Auto-create teams for a rotation group based on its shift model.
+        Deletes existing teams for the group and creates new ones with correct offsets and colors."""
+
+    def get_team_member_count(self, team_id: int) -> int:
+        """Get the number of active persons assigned to a team."""
+
+    def get_all_team_member_counts(
+        self, group_id: Optional[int] = None
+    ) -> dict[int, int]:
+        """Get member counts for all teams, optionally filtered by rotation group."""
 
     # Persons
     def get_persons(self, team_id: Optional[int] = None, active_only: bool = True) -> list[Person]:
@@ -729,145 +815,85 @@ class ValidationError(ShiftCoreError):
 
 ---
 
-## Usage Examples
+## Adapter Functions (`shiftcore_adapter.py`)
 
-### Basic Schedule Generation
+The adapter provides a simplified API for the desktop UI and adds utility functions:
+
+### Team Management
 
 ```python
-from datetime import date
-from shiftcore import (
-    SQLiteRepository, RotationGroup, Team, Person,
-    AvailabilityException, ShiftAssignment, ShiftType,
-    generate_schedule, FairnessEngine, DEFAULT_PATTERNS
-)
+def create_teams_for_rotation_group(rotation_group_id: int) -> list[dict]:
+    """Auto-create teams for a rotation group based on its shift model.
+    Returns list of team dicts."""
 
-# Initialize repository
-repo = SQLiteRepository("data/shift_scheduler.db")
+def get_team_member_count(team_id: int) -> int:
+    """Get the number of active persons assigned to a team."""
 
-# Create rotation group
-rotation = RotationGroup(
-    name="Default",
-    shift_model="2-shift",
-    pattern=DEFAULT_PATTERNS["2-shift"],
-    cycle_start_date=date(2026, 1, 1),
-)
-rotation_id = repo.create_rotation_group(rotation)
+def get_all_team_member_counts(group_id: Optional[int] = None) -> dict[int, int]:
+    """Get member counts for all teams, optionally filtered by rotation group."""
 
-# Create teams with offsets
-teams = [
-    Team(name="Team Alpha", color="#ef4444", rotation_group_id=rotation_id, offset=0),
-    Team(name="Team Bravo", color="#3b82f6", rotation_group_id=rotation_id, offset=2),
-    Team(name="Team Charlie", color="#22c55e", rotation_group_id=rotation_group_id, offset=4),
-]
-team_ids = [repo.create_team(t) for t in teams]
-
-# Create persons
-persons = []
-for i, team_id in enumerate(team_ids):
-    for j in range(2):
-        person = Person(
-            name=f"Person {i*2+j+1}",
-            team_id=team_id,
-            role="operator",
-            active=True,
-        )
-        persons.append(repo.create_person(person))
-
-# Generate schedule
-result = generate_schedule(
-    rotation=repo.get_rotation_group(),
-    teams=repo.get_teams(),
-    persons=repo.get_persons(),
-    exceptions=repo.get_exceptions(),
-    existing_assignments=[],
-    start_date=date(2026, 1, 1),
-    end_date=date(2026, 1, 14),
-)
-
-# Save assignments
-repo.save_assignments(result.assignments)
-
-print(f"Generated {len(result.assignments)} assignments")
-print(f"Fairness variance: {result.fairness_report['variance']}")
+def get_shift_model_info(shift_model: str) -> dict:
+    """Get information about a shift model from SHIFT_MODELS."""
 ```
 
-### Using the Repository Directly
+### Person Management
 
 ```python
-from shiftcore import SQLiteRepository, Team, Person, ShiftType
-from datetime import date
+def create_person_unassigned(
+    name: str,
+    role: str = "operator",
+    telegram_chat_id: str = None,
+    email: str = None,
+) -> int:
+    """Create a new person without team assignment (team_id=0).
+    Returns person ID. Assign to team later with assign_person_to_team()."""
 
-repo = SQLiteRepository("data/shift_scheduler.db")
+def assign_person_to_team(person_id: int, team_id: int) -> None:
+    """Assign an existing person to a team."""
 
-# Create team
-team = Team(name="Night Team", color="#6366f1", rotation_group_id=1, offset=6)
-team_id = repo.create_team(team)
+def import_people_from_csv(csv_content: str) -> list[dict]:
+    """Import people from CSV content.
+    Expected columns: name, role, telegram, email
+    Returns list of created person dicts with IDs."""
 
-# Create person with contact info
-person = Person(
-    name="John Doe",
-    team_id=team_id,
-    role="lead",
-    active=True,
-    telegram_chat_id="123456789",
-    email="john@example.com",
-)
-person_id = repo.create_person(person)
-
-# Add availability exception
-from shiftcore import AvailabilityException
-exc = AvailabilityException(
-    person_id=person_id,
-    start_date=date(2026, 7, 1),
-    end_date=date(2026, 7, 14),
-    reason="Vacation",
-)
-repo.add_exception(exc)
-
-# Manual assignment
-assignment = ShiftAssignment(
-    schedule_date=date(2026, 1, 15),
-    shift_type=ShiftType.FIRST,
-    person_id=person_id,
-    team_id=team_id,
-)
-repo.save_assignment(assignment)
-
-# Query assignments
-assignments = repo.get_assignments(date(2026, 1, 1), date(2026, 1, 31))
-for a in assignments:
-    print(f"{a.schedule_date}: {a.shift_type.name} - Person {a.person_id}")
+def generate_demo_people(count: int = 15) -> list[dict]:
+    """Generate demo people for testing.
+    Returns list of created person dicts with IDs."""
 ```
 
-### Notifications
+### Usage Examples
 
 ```python
-import asyncio
-from shiftcore import NotificationService, SMTPConfig
-
-# Configure
-smtp = SMTPConfig(
-    host="smtp.gmail.com",
-    port=587,
-    username="your-email@gmail.com",
-    password="app-password",
-    from_email="Shift Scheduler <your-email@gmail.com>",
+from shiftcore_adapter import (
+    create_teams_for_rotation_group,
+    create_person_unassigned,
+    assign_person_to_team,
+    import_people_from_csv,
+    generate_demo_people,
+    get_shift_model_info,
 )
 
-service = NotificationService(
-    telegram_token="YOUR_BOT_TOKEN",
-    smtp_config=smtp,
-)
+# Auto-create teams for rotation group
+teams = create_teams_for_rotation_group(rotation_group_id=1)
+print(f"Created {len(teams)} teams")
 
-# Queue notifications
-service.queue_notification("person_dm", "123456789", "You have a new shift assignment!")
-service.queue_notification("team_group", "-987654321", "Team schedule updated")
-service.queue_notification("email", "user@example.com", "Subject: Shift Update\n\nYour schedule has changed.")
+# Create unassigned person, then assign
+person_id = create_person_unassigned("John Doe", "lead", telegram_chat_id="12345")
+assign_person_to_team(person_id, team_id=1)
 
-# Process queue
-async def send_notifications():
-    result = await service.process_queue()
-    print(f"Sent: {result['sent']}, Failed: {result['failed']}, Retried: {result['retried']}")
+# Import from CSV
+csv_data = """name,role,telegram,email
+Alice Smith,operator,user123,alice@example.com
+Bob Jones,lead,user456,bob@example.com"""
+imported = import_people_from_csv(csv_data)
+print(f"Imported {len(imported)} people")
 
-asyncio.run(send_notifications())
+# Generate demo data
+demo = generate_demo_people(20)
+print(f"Generated {len(demo)} demo people")
+
+# Get shift model info
+info = get_shift_model_info("3-shift")
+print(info["team_count"])  # 5
+print(info["max_consecutive"])  # {1: 5, 2: 5, 3: 3}
 ```

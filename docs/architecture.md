@@ -73,6 +73,8 @@ Pure Python dataclasses with no external dependencies:
 
 - **ShiftType** (IntEnum): OFF=0, FIRST=1, SECOND=2, THIRD=3
 - **RotationGroup**: name, shift_model, pattern[], cycle_start_date
+  - **Factory**: `create_default(name, shift_model, cycle_start)` — creates with SHIFT_MODELS defaults
+  - **Helpers**: `get_team_count()`, `get_shifts()`, `get_max_consecutive()`
 - **Team**: name, color, rotation_group_id, offset
 - **Person**: name, team_id, role, active, telegram_chat_id, email
 - **AvailabilityException**: person_id, start_date, end_date, reason
@@ -84,8 +86,10 @@ Pure Python dataclasses with no external dependencies:
 
 Constants:
 - **SHIFT_DEFINITIONS**: Hours for each shift type
-- **MAX_CONSECUTIVE**: Max consecutive shifts per type
-- **DEFAULT_PATTERNS**: 2-shift and 3-shift rotation patterns
+- **MAX_CONSECUTIVE**: Max consecutive shifts per type (defaults, overridden by shift model)
+- **DEFAULT_PATTERNS**: Legacy 2-shift and 3-shift rotation patterns
+- **SHIFT_MODELS**: Centralized shift model configurations (patterns, team counts, shifts, max_consecutive)
+- **TEAM_COLORS**: Default color palette for auto-assigned teams
 
 ### 2. Rotation Engine (`shiftcore/rotation.py`)
 
@@ -96,8 +100,8 @@ Calculates team shifts based on rotation patterns:
 - **get_all_team_shifts()**: Get shifts for all teams on a date
 - **get_off_teams()**: Teams that are OFF on a date (for substitution)
 - **get_on_shift_teams()**: Teams working a specific shift
-- **validate_pattern()**: Validates pattern correctness
-- **create_default_rotation_group()**: Factory for standard patterns
+- **validate_pattern()**: Validates pattern correctness using SHIFT_MODELS
+- **create_default_rotation_group()**: Factory for standard patterns (delegates to RotationGroup.create_default)
 - **calculate_team_offsets()**: Evenly distributes team offsets
 
 ### 3. Constraints (`shiftcore/constraints.py`)
@@ -167,6 +171,9 @@ SQLite repository with full CRUD for all entities:
 - **Indexes** on frequently queried columns
 - **Transaction support** for batch operations
 - **Metadata table** for configuration (Telegram, SMTP, etc.)
+- **Auto-team creation**: `create_teams_for_rotation_group()` — deletes existing teams and creates new ones with correct offsets/colors based on shift model
+- **Member count queries**: `get_team_member_count()`, `get_all_team_member_counts()`
+- **FK behavior**: `team_id` in persons uses `ON DELETE SET NULL` (was CASCADE)
 
 ## Data Flow
 
@@ -194,6 +201,29 @@ SQLiteRepository.save_assignments() (transaction)
          │
          ▼
 Return ScheduleResult → UI populates grid
+```
+
+### Auto-Team Creation
+
+```
+User creates rotation group (or changes shift model)
+         │
+         ▼
+src/app.py:_on_create_rotation_group()
+         │
+         ▼
+shiftcore_adapter.create_teams_for_rotation_group()
+         │
+         ▼
+SQLiteRepository.create_teams_for_rotation_group()
+         │
+         ├── Delete existing teams for rotation group
+         ├── Calculate offsets via calculate_team_offsets()
+         ├── Create teams with TEAM_COLORS
+         └── Return created teams
+         │
+         ▼
+UI refreshes teams list
 ```
 
 ### Shift Swap Validation

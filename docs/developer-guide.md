@@ -309,29 +309,70 @@ class TestNewConstraint:
 1. **Update constants** in `shiftcore/models.py`:
 
 ```python
-DEFAULT_PATTERNS = {
-    "2-shift": [1, 1, 2, 2, 0, 0],
-    "3-shift": [1, 1, 2, 2, 0, 0, 3, 3, 0, 0],
-    "4-shift": [1, 1, 2, 2, 3, 3, 0, 0, 0, 0, 0, 0],  # New
+SHIFT_MODELS = {
+    "2-shift": {
+        "name": "2-Shift (Day/Swing)",
+        "pattern": [1, 1, 2, 2, 0, 0],
+        "pattern_length": 6,
+        "team_count": 3,
+        "shifts": [ShiftType.FIRST, ShiftType.SECOND],
+        "max_consecutive": {ShiftType.FIRST: 5, ShiftType.SECOND: 5},
+    },
+    "3-shift": {
+        "name": "3-Shift (Day/Swing/Night)",
+        "pattern": [1, 1, 2, 2, 0, 0, 3, 3, 0, 0],
+        "pattern_length": 10,
+        "team_count": 5,
+        "shifts": [ShiftType.FIRST, ShiftType.SECOND, ShiftType.THIRD],
+        "max_consecutive": {
+            ShiftType.FIRST: 5,
+            ShiftType.SECOND: 5,
+            ShiftType.THIRD: 3,
+        },
+    },
+    "4-shift": {  # New model
+        "name": "4-Shift (Extended)",
+        "pattern": [1, 1, 2, 2, 3, 3, 4, 4, 0, 0, 0, 0],
+        "pattern_length": 12,
+        "team_count": 6,
+        "shifts": [ShiftType.FIRST, ShiftType.SECOND, ShiftType.THIRD, ShiftType.FOURTH],
+        "max_consecutive": {
+            ShiftType.FIRST: 5,
+            ShiftType.SECOND: 5,
+            ShiftType.THIRD: 3,
+            ShiftType.FOURTH: 2,
+        },
+    },
 }
 
-MAX_CONSECUTIVE = {
-    ShiftType.FIRST: 5,
-    ShiftType.SECOND: 5,
-    ShiftType.THIRD: 3,
-    ShiftType.FOURTH: 2,  # New
+# Add new shift type if needed
+class ShiftType(IntEnum):
+    OFF = 0
+    FIRST = 1
+    SECOND = 2
+    THIRD = 3
+    FOURTH = 4  # New
+
+# Update SHIFT_DEFINITIONS
+SHIFT_DEFINITIONS = {
+    ShiftType.FIRST:  {"name": "1st", "start_hour": 6,  "end_hour": 14, "hours": 8},
+    ShiftType.SECOND: {"name": "2nd", "start_hour": 14, "end_hour": 22, "hours": 8},
+    ShiftType.THIRD:  {"name": "3rd", "start_hour": 22, "end_hour": 6,  "hours": 8},
+    ShiftType.FOURTH: {"name": "4th", "start_hour": 2,  "end_hour": 10, "hours": 8},  # New
 }
+
+# Add to TEAM_COLORS if more teams needed
+TEAM_COLORS = [
+    "#ef4444",  # Red - Team 1
+    "#3b82f6",  # Blue - Team 2
+    "#22c55e",  # Green - Team 3
+    "#f59e0b",  # Amber - Team 4
+    "#a855f7",  # Purple - Team 5
+    "#ec4899",  # Pink - Team 6 (new)
+]
 ```
 
-2. **Update validation** in `shiftcore/rotation.py`:
-
-```python
-def validate_pattern(self) -> tuple[bool, str]:
-    # ... add 4-shift validation ...
-    if self.rotation.shift_model == "4-shift":
-        if not all(s in self.rotation.pattern for s in [1, 2, 3, 4]):
-            return False, "4-shift pattern must contain shifts 1, 2, 3, 4"
-```
+2. **Update validation** in `shiftcore/rotation.py` — automatically handled by SHIFT_MODELS validation
 
 3. **Update UI** in `src/app.py`:
    - Add "4-shift" to shift_model_combo values

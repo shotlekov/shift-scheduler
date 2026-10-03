@@ -28,18 +28,15 @@
    - The app creates a default rotation group automatically
    - Go to **Schedule View** tab → set **Cycle Start** date
    - Choose **Shift Model**: 2-shift or 3-shift
+   - **Teams are auto-created** with correct offsets and colors
 
-3. **Create teams**:
+3. **Add people to teams**:
    - Go to **Teams & People** tab
-   - Click **Add Team**
-   - Set name, color, and initial shift offset
-
-4. **Add people to teams**:
    - Select a team in the left panel
    - Click **Add Person** in the right panel
    - Enter name and role
 
-5. **Generate your first schedule**:
+4. **Generate your first schedule**:
    - Go to **Schedule View** tab
    - Set **Start Date** and **End Date**
    - Click **Generate Schedule**
@@ -112,14 +109,16 @@ Select a person from dropdown → **View Schedule** to see:
 **Columns:** ID, Name, Color
 
 **Actions:**
-- **Add Team** — Create new team
+- **Add Team** — Create new team (manual, for custom setups)
 - **Edit Team** — Modify name, color, offset
 - **Delete Team** — Removes team and all members
+- **Auto-Create Teams** — Regenerates teams for current rotation group with correct offsets/colors
 
 **Team Offset:**
 - Determines where team starts in rotation cycle
-- 2-shift (6-day cycle): Offsets 0, 2, 4 for 3 teams
-- 3-shift (10-day cycle): Offsets 0, 2, 4, 6, 8 for 5 teams
+- **Auto-assigned** when using Auto-Create Teams:
+  - 2-shift (6-day cycle): Offsets 0, 2, 4 for 3 teams
+  - 3-shift (10-day cycle): Offsets 0, 2, 4, 6, 8 for 5 teams
 - Offset 0 = starts on 1st shift (days 0,1)
 - Offset 2 = starts on 2nd shift (days 2,3)
 - Offset 4 = starts on OFF days (days 4,5)
@@ -237,6 +236,37 @@ View all sent/pending/failed notifications with:
 - Recipient
 - Status (pending, sent, failed)
 - Timestamp
+
+---
+
+## Importing People (Advanced)
+
+The application supports importing people via CSV through the adapter API (not yet exposed in UI):
+
+### CSV Format
+
+```csv
+name,role,telegram,email
+Alice Smith,operator,user123,alice@example.com
+Bob Jones,lead,user456,bob@example.com
+```
+
+### Using Python API
+
+```python
+from shiftcore_adapter import import_people_from_csv, generate_demo_people
+
+# Import from CSV string
+csv_data = """name,role,telegram,email
+Alice Smith,operator,user123,alice@example.com
+Bob Jones,lead,user456,bob@example.com"""
+imported = import_people_from_csv(csv_data)
+print(f"Imported {len(imported)} people")
+
+# Generate demo data for testing
+demo = generate_demo_people(20)
+print(f"Generated {len(demo)} demo people")
+```
 
 ---
 

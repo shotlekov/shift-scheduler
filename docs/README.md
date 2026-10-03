@@ -17,18 +17,18 @@ Shift Scheduler is a desktop application for managing team shift schedules with 
 ```
 shift-scheduler/
 ├── shiftcore/          # Core scheduling library (no UI dependencies)
-│   ├── models.py       # Data models (Team, Person, ShiftAssignment, etc.)
+│   ├── models.py       # Data models + SHIFT_MODELS config, TEAM_COLORS
 │   ├── constraints.py  # Constraint validation (rest hours, max consecutive, etc.)
 │   ├── rotation.py     # Rotation engine (pattern-based team shifts)
 │   ├── fairness.py     # Fairness engine (balanced shift distribution)
 │   ├── scheduler.py    # Schedule generation with substitution
 │   ├── swaps.py        # Shift swap validation
 │   ├── notifications.py # Telegram and email notification service
-│   ├── storage.py      # SQLite repository
+│   ├── storage.py      # SQLite repository + auto-team creation
 │   └── exceptions.py   # Custom exceptions
 ├── src/
 │   ├── app.py          # Tkinter desktop GUI
-│   └── shiftcore_adapter.py  # Compatibility adapter
+│   └── shiftcore_adapter.py  # Compatibility adapter + CSV import, demo data
 ├── tests/              # Unit tests (83 tests)
 ├── data/               # SQLite database storage
 ├── build.spec          # PyInstaller build configuration
@@ -78,19 +78,29 @@ pip install python-telegram-bot aiosmtplib
 ### Getting Started
 
 1. Launch the application
-2. Configure your rotation group (2-shift or 3-shift model)
-3. Add teams with their shift offsets
-4. Add people to each team
-5. Set availability exceptions for people who are unavailable
-6. Generate a schedule
+2. Configure your rotation group (2-shift or 3-shift model) — teams are auto-created
+3. Add people to each team
+4. Set availability exceptions for people who are unavailable
+5. Generate a schedule
+
+### Adapter Enhancements
+
+The `shiftcore_adapter.py` provides additional utilities:
+- **CSV Import**: Import people from CSV (columns: name, role, telegram, email)
+- **Demo Data Generation**: Generate test people for development
+- **Unassigned Persons**: Create people without team assignment, assign later
+- **Shift Model Info**: Query shift model configurations programmatically
 
 ### Shift Models
 
-#### 2-Shift Model (Current)
+The application uses centralized shift model configurations defined in `shiftcore.models.SHIFT_MODELS`:
+
+#### 2-Shift Model (Default)
 - **Shift 1**: 06:00 - 14:00
 - **Shift 2**: 14:00 - 22:00
 - **Teams**: 3 teams with 6-day cycle `[1,1,2,2,0,0]`
 - **Max consecutive**: 5 shifts
+- **Offsets**: 0, 2, 4 (evenly distributed)
 
 #### 3-Shift Model
 - **Shift 1**: 06:00 - 14:00
@@ -98,6 +108,16 @@ pip install python-telegram-bot aiosmtplib
 - **Shift 3**: 22:00 - 06:00 (night shift, crosses midnight)
 - **Teams**: 5 teams with 10-day cycle `[1,1,2,2,0,0,3,3,0,0]`
 - **Max consecutive**: 5 shifts (3 for night shift)
+- **Offsets**: 0, 2, 4, 6, 8 (evenly distributed)
+
+### Auto-Team Creation
+
+When creating a rotation group, teams are automatically generated with:
+- Correct offsets based on shift model
+- Default colors from `TEAM_COLORS` palette
+- Proper team count (3 for 2-shift, 5 for 3-shift)
+
+This eliminates manual offset calculation and ensures proper rotation coverage.
 
 ### Constraint Rules
 
@@ -145,13 +165,13 @@ The executable will be in `dist/shift-scheduler.exe`.
 1. **Desktop only**: Currently a desktop application. WebUI planned for future.
 2. **Single database**: Uses a local SQLite database. No multi-user support.
 3. **Manual notification setup**: Telegram bot token and SMTP credentials must be configured manually.
-4. **No import/export**: CSV export is available, but import is not yet implemented.
+4. **CSV import only via adapter**: CSV import is available through the adapter API, not yet exposed in the UI.
 
 ## Future Enhancements
 
 1. **WebUI**: Migrate to a web-based interface using FastAPI + React
 2. **Multi-user support**: Add authentication and concurrent editing
-3. **Import/Export**: Support for importing schedules from CSV
+3. **UI for CSV Import**: Expose CSV import and demo data generation in the UI
 4. **Mobile app**: Native mobile application for shift management
 5. **Advanced reporting**: Generate reports on shift distribution and fairness metrics
 
