@@ -15,6 +15,8 @@ from .models import (
     PersonShiftCounter,
     NotificationQueue,
     ShiftType,
+    SHIFT_MODELS,
+    TEAM_COLORS,
 )
 from .rotation import (
     get_team_shift,
@@ -56,6 +58,8 @@ __all__ = [
     "PersonShiftCounter",
     "NotificationQueue",
     "ShiftType",
+    "SHIFT_MODELS",
+    "TEAM_COLORS",
     # Rotation
     "get_team_shift",
     "get_all_team_shifts",

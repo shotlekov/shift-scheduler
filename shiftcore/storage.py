@@ -5,7 +5,7 @@ Repository pattern for all data access.
 
 import sqlite3
 import json
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -19,8 +19,10 @@ from .models import (
     PersonShiftCounter,
     NotificationQueue,
     ShiftType,
-    DEFAULT_PATTERNS,
+    SHIFT_MODELS,
+    TEAM_COLORS,
 )
+from .rotation import calculate_team_offsets
 from .exceptions import StorageError
 
 
@@ -52,13 +54,12 @@ CREATE TABLE IF NOT EXISTS teams (
 CREATE TABLE IF NOT EXISTS persons (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
-    team_id INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+    team_id INTEGER REFERENCES teams(id) ON DELETE SET NULL,
     role TEXT DEFAULT 'operator',
     active INTEGER DEFAULT 1,
     telegram_chat_id TEXT,
     email TEXT,
-    created_at TEXT DEFAULT (datetime('now')),
-    UNIQUE(name, team_id)
+    created_at TEXT DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS availability_exceptions (
@@ -198,7 +199,7 @@ class SQLiteRepository:
                 ),
             )
             conn.commit()
-            return cur.lastrowid
+            return cur.lastrowid or 0 or 0
         except Exception as e:
             raise StorageError(
                 f"Failed to create rotation group: {e}",
@@ -300,7 +301,7 @@ class SQLiteRepository:
                 (team.name, team.color, team.rotation_group_id, team.offset),
             )
             conn.commit()
-            return cur.lastrowid
+            return cur.lastrowid or 0 or 0
         except Exception as e:
             raise StorageError(
                 f"Failed to create team: {e}", operation="create", table="teams"
@@ -336,6 +337,76 @@ class SQLiteRepository:
             )
         finally:
             conn.close()
+
+    def create_teams_for_rotation_group(self, rotation_group_id: int) -> list[Team]:
+        """Auto-create teams for a rotation group based on its shift model."""
+        rotation = self.get_rotation_group_by_id(rotation_group_id)
+        if not rotation:
+            raise StorageError(
+                f"Rotation group {rotation_group_id} not found",
+                operation="create_teams",
+                table="teams",
+            )
+
+        model = SHIFT_MODELS.get(rotation.shift_model)
+        if not model:
+            raise StorageError(
+                f"Unknown shift model: {rotation.shift_model}",
+                operation="create_teams",
+                table="teams",
+            )
+
+        team_count = model["team_count"]
+        pattern_length = model["pattern_length"]
+        offsets = calculate_team_offsets(pattern_length, team_count)
+
+        # Delete existing teams for this rotation group
+        conn = self._get_conn()
+        try:
+            conn.execute(
+                "DELETE FROM teams WHERE rotation_group_id = ?", (rotation_group_id,)
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        # Create new teams
+        teams = []
+        for i, offset in enumerate(offsets):
+            team = Team(
+                name=f"Team {i + 1}",
+                color=TEAM_COLORS[i % len(TEAM_COLORS)],
+                rotation_group_id=rotation_group_id,
+                offset=offset,
+            )
+            team_id = self.create_team(team)
+            team.id = team_id
+            teams.append(team)
+
+        return teams
+
+    def get_team_member_count(self, team_id: int) -> int:
+        """Get the number of active persons assigned to a team."""
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) as count FROM persons WHERE team_id = ? AND active = 1",
+                (team_id,),
+            ).fetchone()
+            return row["count"] if row else 0
+        finally:
+            conn.close()
+
+    def get_all_team_member_counts(
+        self, group_id: Optional[int] = None
+    ) -> dict[int, int]:
+        """Get member counts for all teams, optionally filtered by rotation group."""
+        teams = self.get_teams(group_id)
+        counts = {}
+        for team in teams:
+            if team.id is not None:
+                counts[team.id] = self.get_team_member_count(team.id)
+        return counts
 
     def _row_to_team(self, row: sqlite3.Row) -> Team:
         return Team(
@@ -408,7 +479,7 @@ class SQLiteRepository:
                 ),
             )
             conn.commit()
-            return cur.lastrowid
+            return cur.lastrowid or 0
         except sqlite3.IntegrityError:
             raise StorageError(
                 f"Person '{person.name}' already exists in this team",
@@ -506,7 +577,7 @@ class SQLiteRepository:
                 ),
             )
             conn.commit()
-            return cur.lastrowid
+            return cur.lastrowid or 0
         except Exception as e:
             raise StorageError(
                 f"Failed to add exception: {e}",
@@ -639,7 +710,7 @@ class SQLiteRepository:
                 ),
             )
             conn.commit()
-            return cur.lastrowid
+            return cur.lastrowid or 0
         except Exception as e:
             raise StorageError(
                 f"Failed to save assignment: {e}",
@@ -765,7 +836,7 @@ class SQLiteRepository:
                 ),
             )
             conn.commit()
-            return cur.lastrowid
+            return cur.lastrowid or 0
         except Exception as e:
             raise StorageError(
                 f"Failed to save swap: {e}", operation="create", table="shift_swaps"
@@ -865,7 +936,7 @@ class SQLiteRepository:
                 (target_type, target_id, message),
             )
             conn.commit()
-            return cur.lastrowid
+            return cur.lastrowid or 0
         except Exception as e:
             raise StorageError(
                 f"Failed to queue notification: {e}",

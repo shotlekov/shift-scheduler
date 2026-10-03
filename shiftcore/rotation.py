@@ -4,7 +4,7 @@ Rotation engine for calculating team shifts based on patterns.
 
 from datetime import date, timedelta
 from typing import Optional
-from .models import RotationGroup, Team, ShiftType, DEFAULT_PATTERNS
+from .models import RotationGroup, Team, ShiftType, SHIFT_MODELS
 
 
 class RotationEngine:
@@ -13,7 +13,8 @@ class RotationEngine:
     def __init__(self, rotation_group: RotationGroup):
         self.rotation = rotation_group
         if not self.rotation.pattern:
-            self.rotation.pattern = DEFAULT_PATTERNS.get(self.rotation.shift_model, [])
+            model = SHIFT_MODELS.get(self.rotation.shift_model, {})
+            self.rotation.pattern = model.get("pattern", [])
 
     def get_team_shift(self, team_offset: int, target_date: date) -> ShiftType:
         """Get shift type for a team at given offset on target date."""
@@ -71,16 +72,14 @@ class RotationEngine:
                 return False, f"Invalid shift value {shift} at position {i}"
 
         # Check pattern has at least one of each shift type for the model
-        if self.rotation.shift_model == "2-shift":
-            if 1 not in self.rotation.pattern or 2 not in self.rotation.pattern:
-                return False, "2-shift pattern must contain both shift 1 and 2"
-        elif self.rotation.shift_model == "3-shift":
-            if (
-                1 not in self.rotation.pattern
-                or 2 not in self.rotation.pattern
-                or 3 not in self.rotation.pattern
-            ):
-                return False, "3-shift pattern must contain shifts 1, 2, and 3"
+        model = SHIFT_MODELS.get(self.rotation.shift_model, {})
+        required_shifts = model.get("shifts", [])
+        for shift in required_shifts:
+            if shift.value not in self.rotation.pattern:
+                return (
+                    False,
+                    f"{self.rotation.shift_model} pattern must contain shift {shift.value}",
+                )
 
         return True, ""
 
@@ -105,17 +104,7 @@ def create_default_rotation_group(
     name: str, shift_model: str, cycle_start: date
 ) -> RotationGroup:
     """Create a rotation group with default pattern for the shift model."""
-    pattern = DEFAULT_PATTERNS.get(shift_model, [])
-    if not pattern:
-        raise ValueError(f"Unknown shift model: {shift_model}")
-
-    return RotationGroup(
-        name=name,
-        shift_model=shift_model,
-        pattern=pattern,
-        cycle_start_date=cycle_start,
-        active=True,
-    )
+    return RotationGroup.create_default(name, shift_model, cycle_start)
 
 
 def calculate_team_offsets(pattern_length: int, team_count: int) -> list[int]:

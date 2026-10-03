@@ -26,6 +26,7 @@ from shiftcore import (
     generate_schedule as core_generate_schedule,
     find_substitute as core_find_substitute,
     FairnessEngine,
+    SHIFT_MODELS,
 )
 from shiftcore.rotation import (
     RotationEngine,
@@ -134,6 +135,165 @@ def update_team(team_id: int, name: str, color: str, initial_shift_offset: int =
 def delete_team(team_id: int):
     """Delete a team."""
     _get_repo().delete_team(team_id)
+
+
+def create_teams_for_rotation_group(rotation_group_id: int):
+    """Auto-create teams for a rotation group based on its shift model."""
+    teams = _get_repo().create_teams_for_rotation_group(rotation_group_id)
+    return [_to_dict(t) for t in teams]
+
+
+def get_team_member_count(team_id: int) -> int:
+    """Get the number of active persons assigned to a team."""
+    return _get_repo().get_team_member_count(team_id)
+
+
+def get_all_team_member_counts(group_id: Optional[int] = None) -> dict[int, int]:
+    """Get member counts for all teams, optionally filtered by rotation group."""
+    return _get_repo().get_all_team_member_counts(group_id)
+
+
+def get_shift_model_info(shift_model: str) -> dict:
+    """Get information about a shift model."""
+    return SHIFT_MODELS.get(shift_model, {})
+
+
+def create_person_unassigned(
+    name: str,
+    role: str = "operator",
+    telegram_chat_id: str = None,
+    email: str = None,
+):
+    """Create a new person without team assignment."""
+    person = Person(
+        name=name,
+        team_id=0,  # Will be assigned later
+        role=role,
+        active=True,
+        telegram_chat_id=telegram_chat_id,
+        email=email,
+    )
+    return _get_repo().create_person(person)
+
+
+def assign_person_to_team(person_id: int, team_id: int):
+    """Assign a person to a team."""
+    person = _get_repo().get_person(person_id)
+    if not person:
+        raise ValueError(f"Person {person_id} not found")
+    person.team_id = team_id
+    _get_repo().update_person(person)
+
+
+def import_people_from_csv(csv_content: str) -> list[dict]:
+    """Import people from CSV content. Expected columns: name,role,telegram,email"""
+    import csv
+    import io
+
+    results = []
+    reader = csv.DictReader(io.StringIO(csv_content))
+    for row in reader:
+        name = row.get("name", "").strip()
+        if not name:
+            continue
+        role = row.get("role", "operator").strip()
+        telegram = row.get("telegram", "").strip() or None
+        email = row.get("email", "").strip() or None
+
+        person_id = create_person_unassigned(name, role, telegram, email)
+        results.append(
+            {
+                "id": person_id,
+                "name": name,
+                "role": role,
+                "telegram": telegram,
+                "email": email,
+            }
+        )
+    return results
+
+
+def generate_demo_people(count: int = 15) -> list[dict]:
+    """Generate demo people for testing."""
+    import random
+
+    roles = ["operator", "lead", "supervisor"]
+    first_names = [
+        "Alex",
+        "Jordan",
+        "Taylor",
+        "Casey",
+        "Morgan",
+        "Riley",
+        "Avery",
+        "Quinn",
+        "Blake",
+        "Cameron",
+        "Drew",
+        "Emery",
+        "Finley",
+        "Hayden",
+        "Jesse",
+        "Kai",
+        "Logan",
+        "Marley",
+        "Noah",
+        "Peyton",
+        "Reese",
+        "Skyler",
+        "Tatum",
+        "Wyatt",
+    ]
+    last_names = [
+        "Smith",
+        "Johnson",
+        "Williams",
+        "Brown",
+        "Jones",
+        "Garcia",
+        "Miller",
+        "Davis",
+        "Rodriguez",
+        "Martinez",
+        "Hernandez",
+        "Lopez",
+        "Gonzalez",
+        "Wilson",
+        "Anderson",
+        "Thomas",
+        "Taylor",
+        "Moore",
+        "Jackson",
+        "Martin",
+        "Lee",
+        "Perez",
+        "Thompson",
+    ]
+
+    results = []
+    for i in range(count):
+        name = f"{random.choice(first_names)} {random.choice(last_names)}"
+        role = random.choice(roles)
+        telegram = (
+            f"user{random.randint(100000, 999999)}" if random.random() > 0.3 else None
+        )
+        email = (
+            f"{name.lower().replace(' ', '.')}@example.com"
+            if random.random() > 0.3
+            else None
+        )
+
+        person_id = create_person_unassigned(name, role, telegram, email)
+        results.append(
+            {
+                "id": person_id,
+                "name": name,
+                "role": role,
+                "telegram": telegram,
+                "email": email,
+            }
+        )
+    return results
 
 
 # --- Persons ---

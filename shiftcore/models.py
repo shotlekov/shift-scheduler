@@ -19,6 +19,52 @@ class ShiftType(IntEnum):
     THIRD = 3  # 22:00-06:00 (crosses midnight)
 
 
+# Shift model configurations
+SHIFT_MODELS = {
+    "2-shift": {
+        "name": "2-Shift (Day/Swing)",
+        "pattern": [1, 1, 2, 2, 0, 0],  # 6 days: 1st, 1st, 2nd, 2nd, off, off
+        "pattern_length": 6,
+        "team_count": 3,
+        "shifts": [ShiftType.FIRST, ShiftType.SECOND],
+        "max_consecutive": {ShiftType.FIRST: 5, ShiftType.SECOND: 5},
+    },
+    "3-shift": {
+        "name": "3-Shift (Day/Swing/Night)",
+        "pattern": [
+            1,
+            1,
+            2,
+            2,
+            0,
+            0,
+            3,
+            3,
+            0,
+            0,
+        ],  # 10 days: 1st, 1st, 2nd, 2nd, off, off, 3rd, 3rd, off, off
+        "pattern_length": 10,
+        "team_count": 5,
+        "shifts": [ShiftType.FIRST, ShiftType.SECOND, ShiftType.THIRD],
+        "max_consecutive": {
+            ShiftType.FIRST: 5,
+            ShiftType.SECOND: 5,
+            ShiftType.THIRD: 3,
+        },
+    },
+}
+
+
+# Default team colors (auto-assigned)
+TEAM_COLORS = [
+    "#ef4444",  # Red - Team 1
+    "#3b82f6",  # Blue - Team 2
+    "#22c55e",  # Green - Team 3
+    "#f59e0b",  # Amber - Team 4
+    "#a855f7",  # Purple - Team 5
+]
+
+
 @dataclass
 class RotationGroup:
     """Rotation group configuration."""
@@ -48,6 +94,34 @@ class RotationGroup:
         days_diff = (target_date - self.cycle_start_date).days
         pattern_index = (days_diff + offset) % self.pattern_length
         return ShiftType(self.pattern[pattern_index])
+
+    @classmethod
+    def create_default(
+        cls, name: str, shift_model: str, cycle_start: date
+    ) -> "RotationGroup":
+        """Create a rotation group with default pattern for the shift model."""
+        if shift_model not in SHIFT_MODELS:
+            raise ValueError(f"Unknown shift model: {shift_model}")
+        model = SHIFT_MODELS[shift_model]
+        return cls(
+            name=name,
+            shift_model=shift_model,
+            pattern=model["pattern"],
+            cycle_start_date=cycle_start,
+            active=True,
+        )
+
+    def get_team_count(self) -> int:
+        """Get the required number of teams for this shift model."""
+        return SHIFT_MODELS[self.shift_model]["team_count"]
+
+    def get_shifts(self) -> list[ShiftType]:
+        """Get the shift types used in this model."""
+        return SHIFT_MODELS[self.shift_model]["shifts"]
+
+    def get_max_consecutive(self) -> dict[ShiftType, int]:
+        """Get max consecutive shifts per shift type."""
+        return SHIFT_MODELS[self.shift_model]["max_consecutive"]
 
 
 @dataclass
@@ -200,14 +274,14 @@ SHIFT_DEFINITIONS = {
     },  # crosses midnight
 }
 
-# Max consecutive shifts per shift type
+# Max consecutive shifts per shift type (defaults, overridden by shift model)
 MAX_CONSECUTIVE = {
     ShiftType.FIRST: 5,
     ShiftType.SECOND: 5,
     ShiftType.THIRD: 3,
 }
 
-# Default patterns
+# Default patterns (legacy, use SHIFT_MODELS instead)
 DEFAULT_PATTERNS = {
     "2-shift": [1, 1, 2, 2, 0, 0],  # 6 days
     "3-shift": [1, 1, 2, 2, 0, 0, 3, 3, 0, 0],  # 10 days
