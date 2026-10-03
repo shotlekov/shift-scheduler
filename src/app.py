@@ -611,10 +611,15 @@ class ShiftSchedulerApp:
         self.notebook = ttk.Notebook(main_container)
         self.notebook.pack(fill="both", expand=True)
 
-        # Schedule tab
+        # Schedule View tab (controls)
         self.schedule_tab = ttk.Frame(self.notebook)
         self.notebook.add(self.schedule_tab, text="Schedule View")
         self._build_schedule_tab()
+
+        # Schedule Grid tab (grid only)
+        self.schedule_grid_tab = ttk.Frame(self.notebook)
+        self.notebook.add(self.schedule_grid_tab, text="Schedule Grid")
+        self._build_schedule_grid_tab()
 
         # Teams tab
         self.teams_tab = ttk.Frame(self.notebook)
@@ -662,17 +667,13 @@ class ShiftSchedulerApp:
         ).pack(side="right")
 
     def _build_schedule_tab(self):
-        """Build the schedule viewing tab."""
-        # Main paned window
-        paned = ttk.PanedWindow(self.schedule_tab, orient="horizontal")
-        paned.pack(fill="both", expand=True, padx=8, pady=8)
-
-        # Left panel - Schedule grid
-        left_frame = ttk.Frame(paned)
-        paned.add(left_frame, weight=2)
+        """Build the schedule controls tab."""
+        # Main frame
+        main_frame = ttk.Frame(self.schedule_tab)
+        main_frame.pack(fill="both", expand=True, padx=8, pady=8)
 
         # Schedule controls
-        controls_frame = ttk.LabelFrame(left_frame, text="Schedule Controls")
+        controls_frame = ttk.LabelFrame(main_frame, text="Schedule Controls")
         controls_frame.pack(fill="x", pady=(0, 8))
 
         # Initial date and model selection
@@ -720,13 +721,68 @@ class ShiftSchedulerApp:
         # Will be populated in _refresh_manual_config()
         self.manual_config_vars = {}  # {(team_id, day_offset): StringVar}
 
-        # Schedule grid
-        grid_frame = ttk.LabelFrame(left_frame, text="Schedule Grid (18 months)")
-        grid_frame.pack(fill="both", expand=True, pady=(0, 8))
+        # Action buttons
+        action_frame = ttk.LabelFrame(main_frame, text="Actions")
+        action_frame.pack(fill="x", pady=(0, 8))
 
-        # Create treeview for schedule (dynamic columns based on teams)
+        btn_frame = ttk.Frame(action_frame)
+        btn_frame.pack(fill="x", padx=8, pady=8)
+
+        ttk.Button(
+            btn_frame,
+            text="Generate Schedule",
+            command=self._on_generate_schedule,
+            style="Accent.TButton",
+        ).pack(side="left", padx=(0, 8))
+
+        ttk.Button(
+            btn_frame,
+            text="Export CSV",
+            command=self._on_export_csv,
+            style="Ghost.TButton",
+        ).pack(side="left", padx=(0, 8))
+
+        ttk.Button(btn_frame, text="Refresh Grid", command=self._on_load_schedule).pack(
+            side="left"
+        )
+
+        # Status
+        self.status_var = tk.StringVar(value="Ready")
+        ttk.Label(main_frame, textvariable=self.status_var, style="Muted.TLabel").pack(
+            anchor="w", padx=8, pady=(8, 0)
+        )
+
+    def _build_schedule_grid_tab(self):
+        """Build the schedule grid tab with simplified view and search."""
+        # Main frame
+        main_frame = ttk.Frame(self.schedule_grid_tab)
+        main_frame.pack(fill="both", expand=True, padx=8, pady=8)
+
+        # Search bar
+        search_frame = ttk.Frame(main_frame)
+        search_frame.pack(fill="x", pady=(0, 8))
+
+        ttk.Label(search_frame, text="Search Person:").pack(side="left", padx=(0, 4))
+        self.search_var = tk.StringVar()
+        self.search_var.trace_add("write", lambda *args: self._on_search_changed())
+        search_entry = ttk.Entry(search_frame, textvariable=self.search_var, width=30)
+        search_entry.pack(side="left", padx=(0, 8))
+
+        ttk.Button(search_frame, text="Clear", command=self._on_clear_search).pack(
+            side="left", padx=(0, 8)
+        )
+
+        ttk.Label(search_frame, text="(Type name to filter schedule)").pack(
+            side="left", padx=(8, 0)
+        )
+
+        # Schedule grid
+        grid_frame = ttk.LabelFrame(main_frame, text="Schedule Grid (18 months)")
+        grid_frame.pack(fill="both", expand=True)
+
+        # Create treeview for schedule - simplified columns
         self.schedule_tree = ttk.Treeview(
-            grid_frame, columns=("date", "day"), show="headings", height=25
+            grid_frame, columns=("date", "day"), show="headings", height=30
         )
 
         # Define base headings (will add team columns dynamically)
@@ -734,8 +790,8 @@ class ShiftSchedulerApp:
         self.schedule_tree.heading("day", text="Day")
 
         # Define base column widths
-        self.schedule_tree.column("date", width=100)
-        self.schedule_tree.column("day", width=100)
+        self.schedule_tree.column("date", width=100, anchor="center")
+        self.schedule_tree.column("day", width=100, anchor="center")
 
         # Add scrollbars
         v_scrollbar = ttk.Scrollbar(
@@ -756,49 +812,19 @@ class ShiftSchedulerApp:
         grid_frame.grid_rowconfigure(0, weight=1)
         grid_frame.grid_columnconfigure(0, weight=1)
 
-        # Right panel - Details and actions
-        right_frame = ttk.Frame(paned)
-        paned.add(right_frame, weight=1)
+        # Configure zebra striping tags
+        self.schedule_tree.tag_configure("oddrow", background="#f5f5f5")
+        self.schedule_tree.tag_configure("evenrow", background="#ffffff")
 
-        # Selected date details
-        details_frame = ttk.LabelFrame(right_frame, text="Date Details")
-        details_frame.pack(fill="x", pady=(0, 8))
+        # Bind events for tooltips
+        self.schedule_tree.bind("<Motion>", self._on_tree_motion)
+        self.schedule_tree.bind("<Leave>", self._on_tree_leave)
+        self.schedule_tree.bind("<Button-1>", self._on_tree_click)
 
-        self.date_details_text = tk.Text(
-            details_frame, height=8, wrap="word", font=(self.mono_font, 9)
-        )
-        self.date_details_text.pack(fill="both", expand=True, padx=4, pady=4)
-
-        # Person details
-        person_frame = ttk.LabelFrame(right_frame, text="Person Details")
-        person_frame.pack(fill="both", expand=True, pady=(0, 8))
-
-        # Person selection
-        person_select_frame = ttk.Frame(person_frame)
-        person_select_frame.pack(fill="x", padx=4, pady=4)
-
-        ttk.Label(person_select_frame, text="Person:").pack(side="left")
-        self.person_var = tk.StringVar()
-        self.person_combo = ttk.Combobox(
-            person_select_frame,
-            textvariable=self.person_var,
-            state="readonly",
-            width=20,
-        )
-        self.person_combo.pack(side="left", padx=(4, 0))
-        self.person_combo.bind("<<ComboboxSelected>>", self._on_person_selected)
-
-        ttk.Button(
-            person_select_frame,
-            text="View Schedule",
-            command=self._on_view_person_schedule,
-        ).pack(side="left", padx=(4, 0))
-
-        # Person schedule text
-        self.person_schedule_text = tk.Text(
-            person_frame, height=10, wrap="word", font=(self.mono_font, 9)
-        )
-        self.person_schedule_text.pack(fill="both", expand=True, padx=4, pady=4)
+        # Tooltip window
+        self.tooltip_window = None
+        self.tooltip_item = None
+        self.tooltip_col = None
 
     def _build_teams_tab(self):
         """Build the teams and people management tab."""
@@ -1731,11 +1757,11 @@ class ShiftSchedulerApp:
         for team in teams:
             col_name = f"team_{team['id']}"
             self.schedule_tree.heading(col_name, text=team["name"])
-            self.schedule_tree.column(col_name, width=200)
+            self.schedule_tree.column(col_name, width=120, anchor="center")
 
         # Set base column widths
-        self.schedule_tree.column("date", width=100)
-        self.schedule_tree.column("day", width=100)
+        self.schedule_tree.column("date", width=100, anchor="center")
+        self.schedule_tree.column("day", width=100, anchor="center")
 
     def _populate_schedule_tree(self):
         """Populate the schedule treeview with schedule data."""
@@ -1743,27 +1769,181 @@ class ShiftSchedulerApp:
             self.schedule_tree.delete(item)
 
         teams = get_teams()
+        search_term = (
+            self.search_var.get().lower() if hasattr(self, "search_var") else ""
+        )
 
-        for row in self.schedule_data:
-            # Format team data dynamically
+        for i, row in enumerate(self.schedule_data):
+            # Format team data dynamically - only shift, no person names
             values = [row["date"], row["day_name"]]
+
+            # Check if this row matches search (person name in any team)
+            row_matches = True
+            if search_term:
+                row_matches = False
+                for team in teams:
+                    team_data = row["teams"].get(
+                        team["id"],
+                        {"shift": "OFF", "person": "", "is_sub": False},
+                    )
+                    if (
+                        team_data["person"]
+                        and search_term in team_data["person"].lower()
+                    ):
+                        row_matches = True
+                        break
+
+            if not row_matches:
+                continue
 
             for team in teams:
                 team_data = row["teams"].get(
                     team["id"],
-                    {"shift": "OFF", "person": "UNASSIGNED", "is_sub": False},
+                    {"shift": "OFF", "person": "", "is_sub": False},
                 )
 
-                # Format team display
+                # Format team display - only shift
                 if team_data["shift"] == "OFF":
                     values.append("OFF")
                 else:
-                    person = team_data["person"]
+                    shift_text = team_data["shift"]
                     if team_data["is_sub"]:
-                        person += " (S)"
-                    values.append(f"{team_data['shift']}: {person}")
+                        shift_text += " (S)"
+                    values.append(shift_text)
 
-            self.schedule_tree.insert("", "end", values=values)
+            # Apply zebra striping
+            tag = "evenrow" if i % 2 == 0 else "oddrow"
+            self.schedule_tree.insert("", "end", values=values, tags=(tag,))
+
+    # Search handlers
+    def _on_search_changed(self):
+        """Handle search text change - repopulate grid with filter."""
+        self._populate_schedule_tree()
+
+    def _on_clear_search(self):
+        """Clear search filter."""
+        self.search_var.set("")
+        self._populate_schedule_tree()
+
+    # Tooltip handlers
+    def _on_tree_motion(self, event):
+        """Show tooltip with squad members on hover."""
+        # Identify row and column under mouse
+        region = self.schedule_tree.identify("region", event.x, event.y)
+        if region != "cell":
+            self._hide_tooltip()
+            return
+
+        row_id = self.schedule_tree.identify_row(event.y)
+        col_id = self.schedule_tree.identify_column(event.x)
+
+        if not row_id or not col_id:
+            self._hide_tooltip()
+            return
+
+        # Skip date/day columns (col #1 and #2)
+        col_index = int(col_id.replace("#", ""))
+        if col_index <= 2:
+            self._hide_tooltip()
+            return
+
+        # Check if tooltip already shown for this cell
+        if self.tooltip_item == row_id and self.tooltip_col == col_id:
+            return
+
+        # Get team index (col_index - 3 because date=1, day=2, team_1=3, etc.)
+        team_index = col_index - 3
+        teams = get_teams()
+        if team_index >= len(teams):
+            self._hide_tooltip()
+            return
+
+        team = teams[team_index]
+        row_data = self.schedule_tree.item(row_id)
+        date_str = row_data["values"][0]
+
+        # Get squad members for this team/date
+        squad_info = self._get_squad_for_team_date(team["id"], date_str)
+        if not squad_info:
+            self._hide_tooltip()
+            return
+
+        self._show_tooltip(
+            event.x_root, event.y_root, squad_info, team["name"], date_str
+        )
+        self.tooltip_item = row_id
+        self.tooltip_col = col_id
+
+    def _on_tree_leave(self, event):
+        """Hide tooltip when mouse leaves tree."""
+        self._hide_tooltip()
+
+    def _on_tree_click(self, event):
+        """Handle click on team cell - could expand to show details."""
+        # For now, just ensure tooltip is shown
+        pass
+
+    def _get_squad_for_team_date(self, team_id: int, date_str: str) -> str:
+        """Get squad members for a team on a specific date."""
+        try:
+            target_date = date.fromisoformat(date_str)
+            persons = get_people(active_only=True)
+            team_persons = [p for p in persons if p.get("team_id") == team_id]
+
+            if not team_persons:
+                return None
+
+            # Check assignments for this date
+            assignments = _get_repo().get_assignments(target_date, target_date)
+            team_assignments = [a for a in assignments if a.team_id == team_id]
+
+            lines = [f"Team: {get_team(team_id)['name']}", f"Date: {date_str}"]
+
+            if team_assignments:
+                for a in team_assignments:
+                    person = get_person(a.person_id)
+                    shift_name = a.shift_type.name
+                    sub_text = " (Substitute)" if a.is_substitute else ""
+                    lines.append(
+                        f"  {shift_name}: {person.name if person else 'Unknown'}{sub_text}"
+                    )
+            else:
+                # Show default squad
+                for p in team_persons:
+                    lines.append(f"  {p['name']} ({p['role']})")
+
+            return "\n".join(lines)
+        except Exception:
+            return None
+
+    def _show_tooltip(self, x: int, y: int, text: str, team_name: str, date_str: str):
+        """Show tooltip window near mouse cursor."""
+        self._hide_tooltip()
+
+        self.tooltip_window = tk.Toplevel(self.root)
+        self.tooltip_window.wm_overrideredirect(True)
+        self.tooltip_window.wm_geometry(f"+{x + 10}+{y + 10}")
+
+        label = tk.Label(
+            self.tooltip_window,
+            text=text,
+            justify="left",
+            background="#ffffe0",
+            relief="solid",
+            borderwidth=1,
+            font=(self.sans_font, 9),
+            padx=8,
+            pady=4,
+        )
+        label.pack()
+
+    def _hide_tooltip(self):
+        """Hide tooltip window."""
+        if self.tooltip_window:
+            self.tooltip_window.destroy()
+            self.tooltip_window = None
+        self.tooltip_item = None
+        self.tooltip_col = None
 
     def _on_generate_schedule(self):
         """Generate a new schedule based on current teams and people."""
