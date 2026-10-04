@@ -1,69 +1,193 @@
 # Shift Scheduler
 
-A desktop application for managing team shift schedules with rotation schemes, availability tracking, and constraint validation.
+A desktop application for managing team shift schedules with rotation schemes, availability tracking, constraint validation, fairness balancing, and notification support.
 
 ## Features
 
-- **Team Management**: Create and manage teams with color coding
-- **Person Management**: Add team members with roles and active/inactive status
-- **Rotation Scheme**: Automatic 6-day rotation (2 days 1st shift, 2 days 2nd shift, 2 days off)
-- **Availability Tracking**: Mark persons as unavailable for date ranges
+- **Rotation Models**: 2-shift (Day/Swing) and 3-shift (Day/Swing/Night) with auto-team creation
+- **Team Management**: Auto-generated teams with correct offsets and color coding
+- **Person Management**: Add team members with roles, Telegram, email, and active/inactive status
+- **Availability Tracking**: Mark persons as unavailable for date ranges (vacation, sick, training)
 - **Constraint Validation**:
-  - Cannot work 1st shift after 2nd shift on previous day
-  - Cannot work 2nd shift before 1st shift on next day
-  - Maximum 5 consecutive working days
-  - Automatic substitution from resting team when needed
-- **Shift Swaps**: Exchange shifts between team members
+  - One shift per day per person
+  - Minimum 12 hours rest between shifts (handles night shift crossing midnight)
+  - Maximum consecutive shifts (5 for day/swing, 3 for night)
+  - Automatic substitution from OFF teams when needed
+- **Fairness Balancing**: Rolling 28-day window with shift count + last assignment tiebreaker
+- **Shift Swaps**: Exchange shifts between team members with full constraint validation
 - **Schedule Generation**: Generate schedules in advance with automatic conflict resolution
+- **Notifications**: Telegram (DM, team group, all-teams group) + Email with retry queue
 - **Export**: Export schedules to CSV format
-- **Substitution System**: Automatically find available substitutes from resting teams
+- **Modern UI**: Light/dark theme, searchable schedule grid with hover tooltips
 
-## Shift Schedule
-- **1st Shift**: 6:00 AM - 2:00 PM
-- **2nd Shift**: 2:00 PM - 10:00 PM
+## Shift Models
 
-## Rotation Pattern
-Each team follows this 6-day cycle:
-- Days 1-2: 1st shift
-- Days 3-4: 2nd shift  
-- Days 5-6: Day off
+### 2-Shift Model (Default)
+- **Shift 1**: 06:00 - 14:00
+- **Shift 2**: 14:00 - 22:00
+- **Teams**: 3 teams with 6-day cycle `[1,1,2,2,0,0]`
+- **Max consecutive**: 5 shifts
+- **Offsets**: 0, 2, 4 (evenly distributed)
 
-Teams are offset so each day has:
-- One team on 1st shift
-- One team on 2nd shift
-- One team off
+### 3-Shift Model
+- **Shift 1**: 06:00 - 14:00
+- **Shift 2**: 14:00 - 22:00
+- **Shift 3**: 22:00 - 06:00 (night shift, crosses midnight)
+- **Teams**: 5 teams with 10-day cycle `[1,1,2,2,0,0,3,3,0,0]`
+- **Max consecutive**: 5 shifts (3 for night shift)
+- **Offsets**: 0, 2, 4, 6, 8 (evenly distributed)
+
+## Architecture
+
+```
+shift-scheduler/
+├── shiftcore/          # Core scheduling library (no UI dependencies)
+│   ├── models.py       # Data models + SHIFT_MODELS config, TEAM_COLORS
+│   ├── constraints.py  # Constraint validation (rest hours, max consecutive, etc.)
+│   ├── rotation.py     # Rotation engine (pattern-based team shifts)
+│   ├── fairness.py     # Fairness engine (balanced shift distribution)
+│   ├── scheduler.py    # Schedule generation with substitution
+│   ├── swaps.py        # Shift swap validation
+│   ├── notifications.py # Telegram and email notification service
+│   ├── storage.py      # SQLite repository + auto-team creation
+│   └── exceptions.py   # Custom exceptions
+├── src/
+│   ├── app.py          # Tkinter desktop GUI
+│   └── shiftcore_adapter.py  # Compatibility adapter + CSV import, demo data
+├── tests/              # Unit tests (83 tests, all passing)
+├── data/               # SQLite database storage
+├── build.spec          # PyInstaller build configuration
+├── build.sh            # Build script
+└── docs/               # Documentation
+```
 
 ## Installation
 
-1. Ensure Python 3.8+ is installed
-2. Clone or copy this directory
-3. Make the launcher script executable: `chmod +x start-app.sh`
-4. Run the application: `./start-app.sh`
+### From Source
 
-The application will automatically create a virtual environment and install dependencies on first run.
+```bash
+# Clone the repository
+git clone https://github.com/shotlekov/shift-scheduler.git
+cd shift-scheduler
+
+# Install dependencies (Python 3.10+ required)
+pip install -r requirements.txt
+
+# Run the application
+python src/app.py
+```
+
+### Pre-built Binary
+
+Download the latest release from the [releases page](https://github.com/shotlekov/shift-scheduler/releases), or build from source:
+
+```bash
+./build.sh
+```
+
+The executable will be in `dist/shift-scheduler` (Linux) or `dist/shift-scheduler.exe` (Windows).
+
+## Requirements
+
+- Python 3.10+
+- tkinter (usually included with Python)
+- Optional: `python-telegram-bot>=20.0` and `aiosmtplib>=2.0` for notifications
+
+Install optional dependencies:
+```bash
+pip install python-telegram-bot aiosmtplib
+```
 
 ## Usage
 
-1. **Setup Teams**: Create your teams in the "Teams & People" tab
-2. **Add People**: Add team members to each team
-3. **Set Availability**: Mark persons as unavailable for vacations, sick days, etc. in the "Availability" tab
-4. **Generate Schedule**: Set date range and click "Generate Schedule"
-5. **View Results**: Check the schedule in the "Schedule View" tab
-6. **Manage Swaps**: Use the "Shift Swaps" tab to exchange shifts between team members
-7. **Export**: Export the schedule to CSV for sharing or printing
+### Getting Started
 
-## Constraints Enforced
+1. Launch the application
+2. Configure your rotation group (2-shift or 3-shift model) — teams are auto-created
+3. Add people (unassigned by default, then assign to teams via dropdown)
+4. Set availability exceptions for people who are unavailable
+5. Generate a schedule
+6. View results in **Schedule Grid** tab with search and tooltips
 
-- No person can work 1st shift immediately after working 2nd shift the previous day
-- No person can work 2nd shift immediately before working 1st shift the next day
-- No person can work more than 5 consecutive days
-- When a person is unavailable, the system automatically finds substitutes from the team that is off that day
-- Substitutes are also checked against all constraints
+### Schedule Grid Tab
 
-## Data Storage
+The new **Schedule Grid** tab provides a clean, read-only view:
+- **Simplified columns**: DATE | DAY | TEAM 1 | TEAM 2 | TEAM 3... (shift only)
+- **Zebra striping** for readability
+- **Search bar** to filter by person name
+- **Hover tooltips** showing squad members for each team/date
+- **18 months** of schedule from Initial Date
 
-All data is stored in a local SQLite database (`data/shift_scheduler.db`) in the application directory.
+### Adapter Enhancements
+
+The `shiftcore_adapter.py` provides additional utilities:
+- **CSV Import**: Import people from CSV (columns: name, role, telegram, email)
+- **Demo Data Generation**: Generate test people for development
+- **Unassigned Persons**: Create people without team assignment, assign later
+- **Shift Model Info**: Query shift model configurations programmatically
+
+## Constraint Rules
+
+1. **One shift per day**: A person cannot work more than one shift on the same day
+2. **Rest hours**: Minimum 12 hours between shifts
+3. **Max consecutive**: Maximum 5 consecutive shifts (3 for night shifts)
+4. **Availability**: People with availability exceptions cannot be scheduled
+
+## Notifications
+
+The application supports notifications via:
+- **Telegram**: Direct messages, team groups, and all-teams group
+- **Email**: Individual email notifications
+
+Configure notification settings in the "Notifications" tab.
+
+## Testing
+
+Run the test suite:
+
+```bash
+python -m pytest tests/ -v
+```
+
+All 83 tests should pass.
+
+## Building
+
+### Linux
+
+```bash
+./build.sh
+```
+
+### Windows
+
+```bash
+pyinstaller build.spec --clean --noconfirm
+```
+
+The executable will be in `dist/shift-scheduler.exe`.
+
+## Documentation
+
+- [User Guide](docs/user-guide.md) — How to use the application
+- [Architecture](docs/architecture.md) — System design and components
+- [API Reference](docs/api.md) — shiftcore library API
+- [Developer Guide](docs/developer-guide.md) — Contributing and development setup
+- [Deployment](docs/deployment.md) — Building and distributing
+
+## Known Limitations
+
+1. **Desktop only**: Currently a desktop application. WebUI planned for future.
+2. **Single database**: Uses a local SQLite database. No multi-user support.
+3. **Manual notification setup**: Telegram bot token and SMTP credentials must be configured manually.
+
+## Future Enhancements
+
+1. **WebUI**: Migrate to a web-based interface using FastAPI + React
+2. **Multi-user support**: Add authentication and concurrent editing
+3. **Mobile app**: Native mobile application for shift management
+4. **Advanced reporting**: Generate reports on shift distribution and fairness metrics
 
 ## License
 
-MIT License
+MIT License - see LICENSE file for details.
