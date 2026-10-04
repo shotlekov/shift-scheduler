@@ -17,6 +17,9 @@ from .models import (
     ShiftType,
     SHIFT_MODELS,
     TEAM_COLORS,
+    BaseSchedule,
+    ScheduleOverlay,
+    ScheduleVersion,
 )
 from .rotation import (
     get_team_shift,
@@ -60,6 +63,9 @@ __all__ = [
     "ShiftType",
     "SHIFT_MODELS",
     "TEAM_COLORS",
+    "BaseSchedule",
+    "ScheduleOverlay",
+    "ScheduleVersion",
     # Rotation
     "get_team_shift",
     "get_all_team_shifts",

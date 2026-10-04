@@ -126,6 +126,40 @@ CREATE TABLE IF NOT EXISTS notification_queue (
     sent_at TEXT
 );
 
+-- Base schedule: immutable rotation pattern for 18 months
+CREATE TABLE IF NOT EXISTS base_schedule (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    schedule_date TEXT NOT NULL,
+    team_id INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+    shift_type INTEGER NOT NULL CHECK (shift_type IN (0, 1, 2, 3)),
+    cycle_start_date TEXT NOT NULL,
+    version INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(schedule_date, team_id, version)
+);
+
+-- Dynamic overlays: substitutions, swaps, exceptions applied on top of base
+CREATE TABLE IF NOT EXISTS schedule_overlays (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    base_schedule_id INTEGER NOT NULL REFERENCES base_schedule(id) ON DELETE CASCADE,
+    overlay_type TEXT NOT NULL CHECK (overlay_type IN ('substitution', 'swap', 'exception', 'manual')),
+    person_id INTEGER REFERENCES persons(id) ON DELETE SET NULL,
+    original_person_id INTEGER REFERENCES persons(id) ON DELETE SET NULL,
+    status TEXT DEFAULT 'active' CHECK (status IN ('active', 'cancelled', 'expired')),
+    created_at TEXT DEFAULT (datetime('now')),
+    expires_at TEXT
+);
+
+-- Schedule version tracking for model changes
+CREATE TABLE IF NOT EXISTS schedule_versions (
+    version INTEGER PRIMARY KEY,
+    shift_model TEXT NOT NULL CHECK (shift_model IN ('2-shift', '3-shift')),
+    cycle_start_date TEXT NOT NULL,
+    team_count INTEGER NOT NULL,
+    created_at TEXT DEFAULT (datetime('now')),
+    is_active INTEGER DEFAULT 1
+);
+
 CREATE INDEX IF NOT EXISTS idx_assignments_date ON shift_assignments(schedule_date);
 CREATE INDEX IF NOT EXISTS idx_assignments_person_date ON shift_assignments(person_id, schedule_date);
 CREATE INDEX IF NOT EXISTS idx_assignments_team_date ON shift_assignments(team_id, schedule_date);
@@ -133,6 +167,9 @@ CREATE INDEX IF NOT EXISTS idx_exceptions_person_date ON availability_exceptions
 CREATE INDEX IF NOT EXISTS idx_swaps_date ON shift_swaps(schedule_date);
 CREATE INDEX IF NOT EXISTS idx_notifications_status ON notification_queue(status);
 CREATE INDEX IF NOT EXISTS idx_counters_person_period ON person_shift_counters(person_id, period_start);
+CREATE INDEX IF NOT EXISTS idx_base_schedule_date_team ON base_schedule(schedule_date, team_id, version);
+CREATE INDEX IF NOT EXISTS idx_overlays_base_schedule ON schedule_overlays(base_schedule_id, status);
+CREATE INDEX IF NOT EXISTS idx_overlays_person_date ON schedule_overlays(person_id, status);
 
 CREATE TABLE IF NOT EXISTS schedule_metadata (
     key TEXT PRIMARY KEY,
@@ -1122,3 +1159,340 @@ class SQLiteRepository:
             return row["value"] if row else default
         finally:
             conn.close()
+
+    # --- Base Schedule (Immutable Rotation Pattern) ---
+
+    def create_base_schedule(self, base: BaseSchedule) -> int:
+        """Create a base schedule entry."""
+        conn = self._get_conn()
+        try:
+            cur = conn.execute(
+                """INSERT INTO base_schedule 
+                   (schedule_date, team_id, shift_type, cycle_start_date, version)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (
+                    base.schedule_date.isoformat(),
+                    base.team_id,
+                    int(base.shift_type),
+                    base.cycle_start_date.isoformat(),
+                    base.version,
+                ),
+            )
+            conn.commit()
+            return cur.lastrowid or 0
+        except Exception as e:
+            raise StorageError(
+                f"Failed to create base schedule: {e}",
+                operation="create",
+                table="base_schedule",
+            )
+        finally:
+            conn.close()
+
+    def create_base_schedule_batch(self, base_schedules: list[BaseSchedule]) -> None:
+        """Create multiple base schedule entries in a transaction."""
+        if not base_schedules:
+            return
+        conn = self._get_conn()
+        try:
+            for base in base_schedules:
+                conn.execute(
+                    """INSERT INTO base_schedule 
+                       (schedule_date, team_id, shift_type, cycle_start_date, version)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (
+                        base.schedule_date.isoformat(),
+                        base.team_id,
+                        int(base.shift_type),
+                        base.cycle_start_date.isoformat(),
+                        base.version,
+                    ),
+                )
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            raise StorageError(
+                f"Failed to create base schedule batch: {e}",
+                operation="create_batch",
+                table="base_schedule",
+            )
+        finally:
+            conn.close()
+
+    def get_base_schedule(
+        self, start_date: date, end_date: date, version: int = 1
+    ) -> list[BaseSchedule]:
+        """Get base schedule entries for a date range and version."""
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                """SELECT * FROM base_schedule 
+                   WHERE schedule_date BETWEEN ? AND ? AND version = ?
+                   ORDER BY schedule_date, team_id""",
+                (start_date.isoformat(), end_date.isoformat(), version),
+            ).fetchall()
+            return [self._row_to_base_schedule(row) for row in rows]
+        finally:
+            conn.close()
+
+    def get_base_schedule_for_date(self, target_date: date, version: int = 1) -> list[BaseSchedule]:
+        """Get base schedule entries for a specific date."""
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                """SELECT * FROM base_schedule 
+                   WHERE schedule_date = ? AND version = ?
+                   ORDER BY team_id""",
+                (target_date.isoformat(), version),
+            ).fetchall()
+            return [self._row_to_base_schedule(row) for row in rows]
+        finally:
+            conn.close()
+
+    def clear_base_schedule(self, version: int = 1) -> None:
+        """Clear all base schedule entries for a version."""
+        conn = self._get_conn()
+        try:
+            conn.execute("DELETE FROM base_schedule WHERE version = ?", (version,))
+            conn.commit()
+        except Exception as e:
+            raise StorageError(
+                f"Failed to clear base schedule: {e}",
+                operation="clear",
+                table="base_schedule",
+            )
+        finally:
+            conn.close()
+
+    def _row_to_base_schedule(self, row: sqlite3.Row) -> BaseSchedule:
+        return BaseSchedule(
+            id=row["id"],
+            schedule_date=date.fromisoformat(row["schedule_date"]),
+            team_id=row["team_id"],
+            shift_type=ShiftType(row["shift_type"]),
+            cycle_start_date=date.fromisoformat(row["cycle_start_date"]),
+            version=row["version"],
+            created_at=row["created_at"],
+        )
+
+    # --- Schedule Overlays (Dynamic Changes) ---
+
+    def create_overlay(self, overlay: ScheduleOverlay) -> int:
+        """Create a schedule overlay."""
+        conn = self._get_conn()
+        try:
+            cur = conn.execute(
+                """INSERT INTO schedule_overlays 
+                   (base_schedule_id, overlay_type, person_id, original_person_id, status, expires_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    overlay.base_schedule_id,
+                    overlay.overlay_type,
+                    overlay.person_id,
+                    overlay.original_person_id,
+                    overlay.status,
+                    overlay.expires_at.isoformat() if overlay.expires_at else None,
+                ),
+            )
+            conn.commit()
+            return cur.lastrowid or 0
+        except Exception as e:
+            raise StorageError(
+                f"Failed to create overlay: {e}",
+                operation="create",
+                table="schedule_overlays",
+            )
+        finally:
+            conn.close()
+
+    def get_overlays_for_base_schedule(self, base_schedule_id: int) -> list[ScheduleOverlay]:
+        """Get all active overlays for a base schedule entry."""
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                """SELECT * FROM schedule_overlays 
+                   WHERE base_schedule_id = ? AND status = 'active'
+                   ORDER BY created_at""",
+                (base_schedule_id,),
+            ).fetchall()
+            return [self._row_to_overlay(row) for row in rows]
+        finally:
+            conn.close()
+
+    def get_overlays_for_date_range(
+        self, start_date: date, end_date: date, version: int = 1
+    ) -> list[ScheduleOverlay]:
+        """Get all active overlays for a date range by joining with base_schedule."""
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                """SELECT o.* FROM schedule_overlays o
+                   JOIN base_schedule b ON o.base_schedule_id = b.id
+                   WHERE b.schedule_date BETWEEN ? AND ? 
+                   AND b.version = ?
+                   AND o.status = 'active'
+                   ORDER BY b.schedule_date, o.created_at""",
+                (start_date.isoformat(), end_date.isoformat(), version),
+            ).fetchall()
+            return [self._row_to_overlay(row) for row in rows]
+        finally:
+            conn.close()
+
+    def get_overlays_by_person(
+        self, person_id: int, start_date: date = None, end_date: date = None
+    ) -> list[ScheduleOverlay]:
+        """Get overlays for a specific person, optionally filtered by date range."""
+        conn = self._get_conn()
+        try:
+            if start_date and end_date:
+                rows = conn.execute(
+                    """SELECT o.* FROM schedule_overlays o
+                       JOIN base_schedule b ON o.base_schedule_id = b.id
+                       WHERE o.person_id = ? AND o.status = 'active'
+                       AND b.schedule_date BETWEEN ? AND ?
+                       ORDER BY b.schedule_date""",
+                    (person_id, start_date.isoformat(), end_date.isoformat()),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """SELECT * FROM schedule_overlays 
+                       WHERE person_id = ? AND status = 'active'
+                       ORDER BY created_at""",
+                    (person_id,),
+                ).fetchall()
+            return [self._row_to_overlay(row) for row in rows]
+        finally:
+            conn.close()
+
+    def cancel_overlay(self, overlay_id: int) -> None:
+        """Cancel an overlay (mark as cancelled)."""
+        conn = self._get_conn()
+        try:
+            conn.execute(
+                "UPDATE schedule_overlays SET status = 'cancelled' WHERE id = ?",
+                (overlay_id,),
+            )
+            conn.commit()
+        except Exception as e:
+            raise StorageError(
+                f"Failed to cancel overlay: {e}",
+                operation="update",
+                table="schedule_overlays",
+            )
+        finally:
+            conn.close()
+
+    def expire_overlays_before(self, cutoff_date: date) -> int:
+        """Mark overlays as expired if their expires_at is before cutoff_date."""
+        conn = self._get_conn()
+        try:
+            cur = conn.execute(
+                """UPDATE schedule_overlays 
+                   SET status = 'expired' 
+                   WHERE expires_at IS NOT NULL 
+                   AND expires_at < ? 
+                   AND status = 'active'""",
+                (cutoff_date.isoformat(),),
+            )
+            conn.commit()
+            return cur.rowcount
+        except Exception as e:
+            raise StorageError(
+                f"Failed to expire overlays: {e}",
+                operation="update",
+                table="schedule_overlays",
+            )
+        finally:
+            conn.close()
+
+    def _row_to_overlay(self, row: sqlite3.Row) -> ScheduleOverlay:
+        return ScheduleOverlay(
+            id=row["id"],
+            base_schedule_id=row["base_schedule_id"],
+            overlay_type=row["overlay_type"],
+            person_id=row["person_id"],
+            original_person_id=row["original_person_id"],
+            status=row["status"],
+            created_at=row["created_at"],
+            expires_at=date.fromisoformat(row["expires_at"]) if row["expires_at"] else None,
+        )
+
+    # --- Schedule Versions (Model Change Tracking) ---
+
+    def create_schedule_version(self, version: ScheduleVersion) -> int:
+        """Create a new schedule version."""
+        conn = self._get_conn()
+        try:
+            # Deactivate previous versions
+            conn.execute("UPDATE schedule_versions SET is_active = 0")
+            
+            cur = conn.execute(
+                """INSERT INTO schedule_versions 
+                   (version, shift_model, cycle_start_date, team_count, is_active)
+                   VALUES (?, ?, ?, ?, 1)""",
+                (
+                    version.version,
+                    version.shift_model,
+                    version.cycle_start_date.isoformat(),
+                    version.team_count,
+                ),
+            )
+            conn.commit()
+            return cur.lastrowid or 0
+        except Exception as e:
+            raise StorageError(
+                f"Failed to create schedule version: {e}",
+                operation="create",
+                table="schedule_versions",
+            )
+        finally:
+            conn.close()
+
+    def get_active_schedule_version(self) -> Optional[ScheduleVersion]:
+        """Get the currently active schedule version."""
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT * FROM schedule_versions WHERE is_active = 1 ORDER BY version DESC LIMIT 1"
+            ).fetchone()
+            if not row:
+                return None
+            return self._row_to_schedule_version(row)
+        finally:
+            conn.close()
+
+    def get_schedule_version(self, version: int) -> Optional[ScheduleVersion]:
+        """Get a specific schedule version."""
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT * FROM schedule_versions WHERE version = ?", (version,)
+            ).fetchone()
+            if not row:
+                return None
+            return self._row_to_schedule_version(row)
+        finally:
+            conn.close()
+
+    def get_all_schedule_versions(self) -> list[ScheduleVersion]:
+        """Get all schedule versions."""
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM schedule_versions ORDER BY version DESC"
+            ).fetchall()
+            return [self._row_to_schedule_version(row) for row in rows]
+        finally:
+            conn.close()
+
+    def _row_to_schedule_version(self, row: sqlite3.Row) -> ScheduleVersion:
+        return ScheduleVersion(
+            version=row["version"],
+            shift_model=row["shift_model"],
+            cycle_start_date=date.fromisoformat(row["cycle_start_date"]),
+            team_count=row["team_count"],
+            created_at=row["created_at"],
+            is_active=bool(row["is_active"]),
+        )
+
+    # --- Utility ---

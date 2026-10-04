@@ -262,6 +262,61 @@ class ScheduleResult:
     fairness_report: dict = field(default_factory=dict)
 
 
+@dataclass
+class BaseSchedule:
+    """Immutable base schedule entry - rotation pattern only."""
+
+    id: Optional[int] = None
+    schedule_date: date = field(default_factory=date.today)
+    team_id: int = 0
+    shift_type: ShiftType = ShiftType.OFF
+    cycle_start_date: date = field(default_factory=date.today)
+    version: int = 1
+    created_at: str = ""
+
+    def __post_init__(self):
+        if isinstance(self.schedule_date, str):
+            self.schedule_date = date.fromisoformat(self.schedule_date)
+        if isinstance(self.cycle_start_date, str):
+            self.cycle_start_date = date.fromisoformat(self.cycle_start_date)
+        if isinstance(self.shift_type, int):
+            self.shift_type = ShiftType(self.shift_type)
+
+
+@dataclass
+class ScheduleOverlay:
+    """Dynamic overlay on base schedule - substitutions, swaps, exceptions."""
+
+    id: Optional[int] = None
+    base_schedule_id: int = 0
+    overlay_type: str = ""  # substitution, swap, exception, manual
+    person_id: Optional[int] = None
+    original_person_id: Optional[int] = None
+    status: str = "active"  # active, cancelled, expired
+    created_at: str = ""
+    expires_at: Optional[date] = None
+
+    def __post_init__(self):
+        if self.expires_at and isinstance(self.expires_at, str):
+            self.expires_at = date.fromisoformat(self.expires_at)
+
+
+@dataclass
+class ScheduleVersion:
+    """Schedule version tracking for model changes."""
+
+    version: int = 0
+    shift_model: str = "2-shift"
+    cycle_start_date: date = field(default_factory=date.today)
+    team_count: int = 0
+    created_at: str = ""
+    is_active: bool = True
+
+    def __post_init__(self):
+        if isinstance(self.cycle_start_date, str):
+            self.cycle_start_date = date.fromisoformat(self.cycle_start_date)
+
+
 # Shift definitions (hours)
 SHIFT_DEFINITIONS = {
     ShiftType.FIRST: {"name": "1st", "start_hour": 6, "end_hour": 14, "hours": 8},

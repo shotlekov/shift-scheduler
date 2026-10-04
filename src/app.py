@@ -12,7 +12,8 @@ import json
 import threading
 import queue
 from pathlib import Path
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Callable, Any
+from collections import defaultdict
 
 # Import our modules
 import sys
@@ -24,6 +25,34 @@ sys.path.insert(0, str(Path(__file__).parent))  # src directory for adapter
 from shiftcore_adapter import *
 from shiftcore_adapter import _to_dict
 from shiftcore import SHIFT_MODELS
+
+
+class ScheduleEventBus:
+    """Simple pub/sub event bus for schedule changes."""
+
+    def __init__(self):
+        self._subscribers: Dict[str, List[Callable]] = defaultdict(list)
+
+    def subscribe(self, event_type: str, callback: Callable):
+        """Subscribe to an event type."""
+        self._subscribers[event_type].append(callback)
+
+    def unsubscribe(self, event_type: str, callback: Callable):
+        """Unsubscribe from an event type."""
+        if callback in self._subscribers[event_type]:
+            self._subscribers[event_type].remove(callback)
+
+    def publish(self, event_type: str, data: Any = None):
+        """Publish an event to all subscribers."""
+        for callback in self._subscribers[event_type]:
+            try:
+                callback(data)
+            except Exception as e:
+                print(f"Error in event handler for {event_type}: {e}")
+
+
+# Global event bus instance
+schedule_event_bus = ScheduleEventBus()
 
 
 class ShiftSchedulerApp:
@@ -68,6 +97,27 @@ class ShiftSchedulerApp:
         # Load initial data
         self._on_load_notification_settings()
         self._refresh_all()
+
+        # Subscribe to schedule events for dynamic updates
+        schedule_event_bus.subscribe(
+            "schedule.overlay_added", self._on_schedule_overlay_changed
+        )
+        schedule_event_bus.subscribe(
+            "schedule.overlay_removed", self._on_schedule_overlay_changed
+        )
+        schedule_event_bus.subscribe(
+            "schedule.base_reinitialized", self._on_schedule_base_reinitialized
+        )
+
+    def _on_schedule_overlay_changed(self, data):
+        """Handle schedule overlay changes (substitutions, swaps, exceptions)."""
+        # Refresh the schedule grid on main thread
+        self.root.after(0, self._on_load_schedule)
+
+    def _on_schedule_base_reinitialized(self, data):
+        """Handle base schedule reinitialization."""
+        # Full refresh needed
+        self.root.after(0, self._refresh_all)
 
     def _setup_fonts(self):
         """Detect and set up proper fonts according to specification."""
@@ -910,35 +960,35 @@ class ShiftSchedulerApp:
         self.notebook = ttk.Notebook(main_container)
         self.notebook.pack(fill="both", expand=True)
 
-        # Schedule Grid tab (grid only) - FIRST TAB
+        # 1. Schedule Grid tab (main view) - FIRST TAB
         self.schedule_grid_tab = ttk.Frame(self.notebook)
         self.notebook.add(self.schedule_grid_tab, text="Schedule Grid")
         self._build_schedule_grid_tab()
 
-        # Schedule View tab (controls)
-        self.schedule_tab = ttk.Frame(self.notebook)
-        self.notebook.add(self.schedule_tab, text="Schedule View")
-        self._build_schedule_tab()
-
-        # Teams tab
-        self.teams_tab = ttk.Frame(self.notebook)
-        self.notebook.add(self.teams_tab, text="Teams & People")
-        self._build_teams_tab()
-
-        # Exceptions tab
-        self.exceptions_tab = ttk.Frame(self.notebook)
-        self.notebook.add(self.exceptions_tab, text="Availability")
-        self._build_exceptions_tab()
-
-        # Swaps tab
+        # 2. Shift Swaps tab
         self.swaps_tab = ttk.Frame(self.notebook)
         self.notebook.add(self.swaps_tab, text="Shift Swaps")
         self._build_swaps_tab()
 
-        # Notifications tab
+        # 3. Availability tab (with sub-tabs)
+        self.exceptions_tab = ttk.Frame(self.notebook)
+        self.notebook.add(self.exceptions_tab, text="Availability")
+        self._build_exceptions_tab()
+
+        # 4. Notifications tab
         self.notifications_tab = ttk.Frame(self.notebook)
         self.notebook.add(self.notifications_tab, text="Notifications")
         self._build_notifications_tab()
+
+        # 5. Teams & People tab
+        self.teams_tab = ttk.Frame(self.notebook)
+        self.notebook.add(self.teams_tab, text="Teams & People")
+        self._build_teams_tab()
+
+        # 6. Schedule Initialization tab (formerly Schedule View)
+        self.schedule_tab = ttk.Frame(self.notebook)
+        self.notebook.add(self.schedule_tab, text="Schedule Initialization")
+        self._build_schedule_tab()
 
         # Bottom bar
         bottom_frame = ttk.Frame(main_container)
@@ -1116,12 +1166,23 @@ class ShiftSchedulerApp:
         grid_frame.grid_columnconfigure(0, weight=1)
 
         # Configure zebra striping tags
-        self.schedule_tree.tag_configure("oddrow", background="#f5f5f5")
-        self.schedule_tree.tag_configure("evenrow", background="#ffffff")
+        palette = self._get_palette()
+        self.schedule_tree.tag_configure("oddrow", background=palette["card"])
+        self.schedule_tree.tag_configure("evenrow", background=palette["zebra"])
         # Tag for unfilled shifts (needs coverage)
         self.schedule_tree.tag_configure(
             "unfilled", background="#ffebee", foreground="#c62828"
         )
+        # Color coding tags for dynamic updates
+        self.schedule_tree.tag_configure(
+            "unavailable", background="#ffebee", foreground="#c62828"
+        )  # Red for unavailable
+        self.schedule_tree.tag_configure(
+            "swapped", background="#e8f5e9", foreground="#2e7d32"
+        )  # Green for swapped
+        self.schedule_tree.tag_configure(
+            "substituted", background="#fff3e0", foreground="#e65100"
+        )  # Yellow/Amber for substituted
 
         # Bind events for tooltips and click selection
         self.schedule_tree.bind("<Motion>", self._on_tree_motion)
@@ -1152,14 +1213,16 @@ class ShiftSchedulerApp:
         ).pack(fill="x", padx=8, pady=8)
 
         # Squad list treeview
-        squad_columns = ("name", "role")
+        squad_columns = ("name", "role", "status")
         self.squad_tree = ttk.Treeview(
             squad_frame, columns=squad_columns, show="headings", height=20
         )
         self.squad_tree.heading("name", text="Name")
         self.squad_tree.heading("role", text="Role")
-        self.squad_tree.column("name", width=200)
-        self.squad_tree.column("role", width=100)
+        self.squad_tree.heading("status", text="Status")
+        self.squad_tree.column("name", width=180)
+        self.squad_tree.column("role", width=80)
+        self.squad_tree.column("status", width=120)
 
         squad_v_scroll = ttk.Scrollbar(
             squad_frame, orient="vertical", command=self.squad_tree.yview
@@ -1300,117 +1363,184 @@ class ShiftSchedulerApp:
         people_frame.grid_rowconfigure(2, weight=0)
 
     def _build_exceptions_tab(self):
-        """Build the availability exceptions tab."""
+        """Build the availability exceptions tab with sub-tabs: Current, History, Upcoming."""
         # Main frame
         main_frame = ttk.Frame(self.exceptions_tab)
         main_frame.pack(fill="both", expand=True, padx=8, pady=8)
 
-        # Controls
-        controls_frame = ttk.LabelFrame(main_frame, text="Availability Exceptions")
-        controls_frame.pack(fill="both", expand=True, pady=(0, 8))
+        # Sub-notebook for Current/History/Upcoming
+        self.exceptions_sub_notebook = ttk.Notebook(main_frame)
+        self.exceptions_sub_notebook.pack(fill="both", expand=True)
+
+        # --- Current Sub-tab (default) ---
+        self.exceptions_current_tab = ttk.Frame(self.exceptions_sub_notebook)
+        self.exceptions_sub_notebook.add(self.exceptions_current_tab, text="Current")
+        self._build_exceptions_subtab(self.exceptions_current_tab, "current")
+
+        # --- History Sub-tab ---
+        self.exceptions_history_tab = ttk.Frame(self.exceptions_sub_notebook)
+        self.exceptions_sub_notebook.add(self.exceptions_history_tab, text="History")
+        self._build_exceptions_subtab(self.exceptions_history_tab, "history")
+
+        # --- Upcoming Sub-tab ---
+        self.exceptions_upcoming_tab = ttk.Frame(self.exceptions_sub_notebook)
+        self.exceptions_sub_notebook.add(self.exceptions_upcoming_tab, text="Upcoming")
+        self._build_exceptions_subtab(self.exceptions_upcoming_tab, "upcoming")
+
+        # Bind tab change event
+        self.exceptions_sub_notebook.bind(
+            "<<NotebookTabChanged>>", self._on_exceptions_subtab_changed
+        )
+
+    def _build_exceptions_subtab(self, parent_frame, subtab_type: str):
+        """Build a sub-tab for exceptions (Current/History/Upcoming)."""
+        # Controls frame
+        controls_frame = ttk.LabelFrame(parent_frame, text="Availability Exceptions")
+        controls_frame.pack(fill="both", expand=True, pady=(0, 8), padx=8)
 
         # Person selection
         person_frame = ttk.Frame(controls_frame)
         person_frame.pack(fill="x", padx=8, pady=8)
 
         ttk.Label(person_frame, text="Person:").pack(side="left")
-        self.exception_person_var = tk.StringVar()
-        self.exception_person_combo = ttk.Combobox(
+        exception_person_var = tk.StringVar()
+        exception_person_combo = ttk.Combobox(
             person_frame,
-            textvariable=self.exception_person_var,
+            textvariable=exception_person_var,
             state="readonly",
             width=25,
         )
-        self.exception_person_combo.pack(side="left", padx=(4, 0))
-        self.exception_person_combo.bind(
+        exception_person_combo.pack(side="left", padx=(4, 0))
+        exception_person_combo.bind(
             "<<ComboboxSelected>>", self._on_exception_person_selected
         )
 
         ttk.Button(
-            person_frame, text="Refresh", command=self._refresh_exceptions_for_person
+            person_frame,
+            text="Refresh",
+            command=lambda: self._refresh_exceptions_for_person(subtab_type),
         ).pack(side="left", padx=(4, 0))
 
-        # Date range for exception
-        date_frame = ttk.Frame(controls_frame)
-        date_frame.pack(fill="x", padx=8, pady=4)
+        # Store references for each sub-tab
+        setattr(self, f"exception_person_var_{subtab_type}", exception_person_var)
+        setattr(self, f"exception_person_combo_{subtab_type}", exception_person_combo)
 
-        ttk.Label(date_frame, text="Start Date:").grid(
-            row=0, column=0, sticky="w", padx=(0, 4)
-        )
-        self.exception_start_var = tk.StringVar(value=date.today().isoformat())
-        ttk.Entry(date_frame, textvariable=self.exception_start_var, width=12).grid(
-            row=0, column=1, padx=(0, 16)
-        )
+        # Date range for exception (only for Current and Upcoming tabs)
+        if subtab_type in ("current", "upcoming"):
+            date_frame = ttk.Frame(controls_frame)
+            date_frame.pack(fill="x", padx=8, pady=4)
 
-        ttk.Label(date_frame, text="End Date:").grid(
-            row=0, column=2, sticky="w", padx=(0, 4)
-        )
-        self.exception_end_var = tk.StringVar(
-            value=(date.today() + timedelta(days=7)).isoformat()
-        )
-        ttk.Entry(date_frame, textvariable=self.exception_end_var, width=12).grid(
-            row=0, column=3, padx=(0, 16)
-        )
+            ttk.Label(date_frame, text="Start Date:").grid(
+                row=0, column=0, sticky="w", padx=(0, 4)
+            )
+            exception_start_var = tk.StringVar(value=date.today().isoformat())
+            ttk.Entry(date_frame, textvariable=exception_start_var, width=12).grid(
+                row=0, column=1, padx=(0, 16)
+            )
 
-        ttk.Label(date_frame, text="Reason:").grid(
-            row=0, column=4, sticky="w", padx=(0, 4)
-        )
-        self.exception_reason_var = tk.StringVar()
-        ttk.Entry(date_frame, textvariable=self.exception_reason_var, width=20).grid(
-            row=0, column=5
-        )
+            ttk.Label(date_frame, text="End Date:").grid(
+                row=0, column=2, sticky="w", padx=(0, 4)
+            )
+            exception_end_var = tk.StringVar(
+                value=(date.today() + timedelta(days=7)).isoformat()
+            )
+            ttk.Entry(date_frame, textvariable=exception_end_var, width=12).grid(
+                row=0, column=3, padx=(0, 16)
+            )
 
-        ttk.Button(
-            date_frame, text="Add Exception", command=self._on_add_exception
-        ).grid(row=0, column=6, padx=(16, 0))
-        ttk.Button(
-            date_frame, text="Delete Selected", command=self._on_delete_exception
-        ).grid(row=0, column=7)
+            ttk.Label(date_frame, text="Reason:").grid(
+                row=0, column=4, sticky="w", padx=(0, 4)
+            )
+            exception_reason_var = tk.StringVar()
+            ttk.Entry(date_frame, textvariable=exception_reason_var, width=20).grid(
+                row=0, column=5
+            )
+
+            ttk.Button(
+                date_frame, text="Add Exception", command=self._on_add_exception
+            ).grid(row=0, column=6, padx=(16, 0))
+            ttk.Button(
+                date_frame, text="Delete Selected", command=self._on_delete_exception
+            ).grid(row=0, column=7)
+
+            # Store references
+            setattr(self, f"exception_start_var_{subtab_type}", exception_start_var)
+            setattr(self, f"exception_end_var_{subtab_type}", exception_end_var)
+            setattr(self, f"exception_reason_var_{subtab_type}", exception_reason_var)
 
         # Exceptions list
         exceptions_frame = ttk.LabelFrame(controls_frame, text="Exceptions List")
         exceptions_frame.pack(fill="both", expand=True, pady=(8, 0))
 
         columns = ("id", "person", "start_date", "end_date", "reason")
-        self.exceptions_tree = ttk.Treeview(
+        exceptions_tree = ttk.Treeview(
             exceptions_frame, columns=columns, show="headings", height=12
         )
-        self.exceptions_tree.heading("id", text="ID")
-        self.exceptions_tree.heading("person", text="Person")
-        self.exceptions_tree.heading("start_date", text="Start Date")
-        self.exceptions_tree.heading("end_date", text="End Date")
-        self.exceptions_tree.heading("reason", text="Reason")
-        self.exceptions_tree.column("id", width=50)
-        self.exceptions_tree.column("person", width=150)
-        self.exceptions_tree.column("start_date", width=100)
-        self.exceptions_tree.column("end_date", width=100)
-        self.exceptions_tree.column("reason", width=200)
+        exceptions_tree.heading("id", text="ID")
+        exceptions_tree.heading("person", text="Person")
+        exceptions_tree.heading("start_date", text="Start Date")
+        exceptions_tree.heading("end_date", text="End Date")
+        exceptions_tree.heading("reason", text="Reason")
+        exceptions_tree.column("id", width=50)
+        exceptions_tree.column("person", width=150)
+        exceptions_tree.column("start_date", width=100)
+        exceptions_tree.column("end_date", width=100)
+        exceptions_tree.column("reason", width=200)
 
         exc_v_scroll = ttk.Scrollbar(
-            exceptions_frame, orient="vertical", command=self.exceptions_tree.yview
+            exceptions_frame, orient="vertical", command=exceptions_tree.yview
         )
         exc_h_scroll = ttk.Scrollbar(
-            exceptions_frame, orient="horizontal", command=self.exceptions_tree.xview
+            exceptions_frame, orient="horizontal", command=exceptions_tree.xview
         )
-        self.exceptions_tree.configure(
+        exceptions_tree.configure(
             yscrollcommand=exc_v_scroll.set, xscrollcommand=exc_h_scroll.set
         )
-        self.exceptions_tree.grid(row=0, column=0, sticky="nsew")
+        exceptions_tree.grid(row=0, column=0, sticky="nsew")
         exc_v_scroll.grid(row=0, column=1, sticky="ns")
         exc_h_scroll.grid(row=1, column=0, sticky="ew")
 
         exceptions_frame.grid_rowconfigure(0, weight=1)
         exceptions_frame.grid_columnconfigure(0, weight=1)
 
+        # Store tree reference
+        setattr(self, f"exceptions_tree_{subtab_type}", exceptions_tree)
+
     def _build_swaps_tab(self):
-        """Build the shift swaps tab."""
+        """Build the shift swaps tab with sub-tabs: Current, History, Upcoming."""
         # Main frame
         main_frame = ttk.Frame(self.swaps_tab)
         main_frame.pack(fill="both", expand=True, padx=8, pady=8)
 
-        # Controls
-        controls_frame = ttk.LabelFrame(main_frame, text="Shift Swaps")
-        controls_frame.pack(fill="both", expand=True, pady=(0, 8))
+        # Sub-notebook for Current/History/Upcoming
+        self.swaps_sub_notebook = ttk.Notebook(main_frame)
+        self.swaps_sub_notebook.pack(fill="both", expand=True)
+
+        # --- Current Sub-tab (default) ---
+        self.swaps_current_tab = ttk.Frame(self.swaps_sub_notebook)
+        self.swaps_sub_notebook.add(self.swaps_current_tab, text="Current")
+        self._build_swaps_subtab(self.swaps_current_tab, "current")
+
+        # --- History Sub-tab ---
+        self.swaps_history_tab = ttk.Frame(self.swaps_sub_notebook)
+        self.swaps_sub_notebook.add(self.swaps_history_tab, text="History")
+        self._build_swaps_subtab(self.swaps_history_tab, "history")
+
+        # --- Upcoming Sub-tab ---
+        self.swaps_upcoming_tab = ttk.Frame(self.swaps_sub_notebook)
+        self.swaps_sub_notebook.add(self.swaps_upcoming_tab, text="Upcoming")
+        self._build_swaps_subtab(self.swaps_upcoming_tab, "upcoming")
+
+        # Bind tab change event
+        self.swaps_sub_notebook.bind(
+            "<<NotebookTabChanged>>", self._on_swaps_subtab_changed
+        )
+
+    def _build_swaps_subtab(self, parent_frame, subtab_type: str):
+        """Build a sub-tab for swaps (Current/History/Upcoming)."""
+        # Controls frame
+        controls_frame = ttk.LabelFrame(parent_frame, text="Shift Swaps")
+        controls_frame.pack(fill="both", expand=True, pady=(0, 8), padx=8)
 
         # Date selection
         date_frame = ttk.Frame(controls_frame)
@@ -1419,8 +1549,8 @@ class ShiftSchedulerApp:
         ttk.Label(date_frame, text="Date:").grid(
             row=0, column=0, sticky="w", padx=(0, 4)
         )
-        self.swap_date_var = tk.StringVar(value=date.today().isoformat())
-        ttk.Entry(date_frame, textvariable=self.swap_date_var, width=12).grid(
+        swap_date_var = tk.StringVar(value=date.today().isoformat())
+        ttk.Entry(date_frame, textvariable=swap_date_var, width=12).grid(
             row=0, column=1, padx=(0, 16)
         )
 
@@ -1428,47 +1558,47 @@ class ShiftSchedulerApp:
         ttk.Label(date_frame, text="Person A:").grid(
             row=0, column=2, sticky="w", padx=(0, 4)
         )
-        self.swap_person_a_var = tk.StringVar()
-        self.swap_person_a_combo = ttk.Combobox(
-            date_frame, textvariable=self.swap_person_a_var, state="readonly", width=15
+        swap_person_a_var = tk.StringVar()
+        swap_person_a_combo = ttk.Combobox(
+            date_frame, textvariable=swap_person_a_var, state="readonly", width=15
         )
-        self.swap_person_a_combo.grid(row=0, column=3, padx=(0, 8))
+        swap_person_a_combo.grid(row=0, column=3, padx=(0, 8))
 
         ttk.Label(date_frame, text="Shift:").grid(
             row=0, column=4, sticky="w", padx=(0, 4)
         )
-        self.swap_shift_a_var = tk.StringVar(value="1")
-        self.swap_shift_a_combo = ttk.Combobox(
+        swap_shift_a_var = tk.StringVar(value="1")
+        swap_shift_a_combo = ttk.Combobox(
             date_frame,
-            textvariable=self.swap_shift_a_var,
+            textvariable=swap_shift_a_var,
             values=["1", "2", "3"],
             state="readonly",
             width=5,
         )
-        self.swap_shift_a_combo.grid(row=0, column=5)
+        swap_shift_a_combo.grid(row=0, column=5)
 
         # Person B selection
         ttk.Label(date_frame, text="Person B:").grid(
             row=0, column=6, sticky="w", padx=(0, 4)
         )
-        self.swap_person_b_var = tk.StringVar()
-        self.swap_person_b_combo = ttk.Combobox(
-            date_frame, textvariable=self.swap_person_b_var, state="readonly", width=15
+        swap_person_b_var = tk.StringVar()
+        swap_person_b_combo = ttk.Combobox(
+            date_frame, textvariable=swap_person_b_var, state="readonly", width=15
         )
-        self.swap_person_b_combo.grid(row=0, column=7, padx=(0, 8))
+        swap_person_b_combo.grid(row=0, column=7, padx=(0, 8))
 
         ttk.Label(date_frame, text="Shift:").grid(
             row=0, column=8, sticky="w", padx=(0, 4)
         )
-        self.swap_shift_b_var = tk.StringVar(value="2")
-        self.swap_shift_b_combo = ttk.Combobox(
+        swap_shift_b_var = tk.StringVar(value="2")
+        swap_shift_b_combo = ttk.Combobox(
             date_frame,
-            textvariable=self.swap_shift_b_var,
+            textvariable=swap_shift_b_var,
             values=["1", "2", "3"],
             state="readonly",
             width=5,
         )
-        self.swap_shift_b_combo.grid(row=0, column=9)
+        swap_shift_b_combo.grid(row=0, column=9)
 
         ttk.Button(date_frame, text="Add Swap", command=self._on_add_swap).grid(
             row=0, column=10, padx=(16, 0)
@@ -1477,42 +1607,56 @@ class ShiftSchedulerApp:
             date_frame, text="Delete Selected", command=self._on_delete_swap
         ).grid(row=0, column=11)
 
+        # Store references for each sub-tab
+        setattr(self, f"swap_date_var_{subtab_type}", swap_date_var)
+        setattr(self, f"swap_person_a_var_{subtab_type}", swap_person_a_var)
+        setattr(self, f"swap_person_a_combo_{subtab_type}", swap_person_a_combo)
+        setattr(self, f"swap_shift_a_var_{subtab_type}", swap_shift_a_var)
+        setattr(self, f"swap_shift_a_combo_{subtab_type}", swap_shift_a_combo)
+        setattr(self, f"swap_person_b_var_{subtab_type}", swap_person_b_var)
+        setattr(self, f"swap_person_b_combo_{subtab_type}", swap_person_b_combo)
+        setattr(self, f"swap_shift_b_var_{subtab_type}", swap_shift_b_var)
+        setattr(self, f"swap_shift_b_combo_{subtab_type}", swap_shift_b_combo)
+
         # Swaps list
         swaps_frame = ttk.LabelFrame(controls_frame, text="Swaps List")
         swaps_frame.pack(fill="both", expand=True, pady=(8, 0))
 
         columns = ("id", "date", "person_a", "shift_a", "person_b", "shift_b")
-        self.swaps_tree = ttk.Treeview(
+        swaps_tree = ttk.Treeview(
             swaps_frame, columns=columns, show="headings", height=12
         )
-        self.swaps_tree.heading("id", text="ID")
-        self.swaps_tree.heading("date", text="Date")
-        self.swaps_tree.heading("person_a", text="Person A")
-        self.swaps_tree.heading("shift_a", text="Shift A")
-        self.swaps_tree.heading("person_b", text="Person B")
-        self.swaps_tree.heading("shift_b", text="Shift B")
-        self.swaps_tree.column("id", width=50)
-        self.swaps_tree.column("date", width=100)
-        self.swaps_tree.column("person_a", width=150)
-        self.swaps_tree.column("shift_a", width=60)
-        self.swaps_tree.column("person_b", width=150)
-        self.swaps_tree.column("shift_b", width=60)
+        swaps_tree.heading("id", text="ID")
+        swaps_tree.heading("date", text="Date")
+        swaps_tree.heading("person_a", text="Person A")
+        swaps_tree.heading("shift_a", text="Shift A")
+        swaps_tree.heading("person_b", text="Person B")
+        swaps_tree.heading("shift_b", text="Shift B")
+        swaps_tree.column("id", width=50)
+        swaps_tree.column("date", width=100)
+        swaps_tree.column("person_a", width=150)
+        swaps_tree.column("shift_a", width=60)
+        swaps_tree.column("person_b", width=150)
+        swaps_tree.column("shift_b", width=60)
 
         swap_v_scroll = ttk.Scrollbar(
-            swaps_frame, orient="vertical", command=self.swaps_tree.yview
+            swaps_frame, orient="vertical", command=swaps_tree.yview
         )
         swap_h_scroll = ttk.Scrollbar(
-            swaps_frame, orient="horizontal", command=self.swaps_tree.xview
+            swaps_frame, orient="horizontal", command=swaps_tree.xview
         )
-        self.swaps_tree.configure(
+        swaps_tree.configure(
             yscrollcommand=swap_v_scroll.set, xscrollcommand=swap_h_scroll.set
         )
-        self.swaps_tree.grid(row=0, column=0, sticky="nsew")
+        swaps_tree.grid(row=0, column=0, sticky="nsew")
         swap_v_scroll.grid(row=0, column=1, sticky="ns")
         swap_h_scroll.grid(row=1, column=0, sticky="ew")
 
         swaps_frame.grid_rowconfigure(0, weight=1)
         swaps_frame.grid_columnconfigure(0, weight=1)
+
+        # Store tree reference
+        setattr(self, f"swaps_tree_{subtab_type}", swaps_tree)
 
     def _build_notifications_tab(self):
         """Build the notifications configuration tab."""
@@ -1787,7 +1931,7 @@ class ShiftSchedulerApp:
             )
 
     def _refresh_exception_people(self):
-        """Refresh the person combobox for exceptions."""
+        """Refresh the person combobox for exceptions in all sub-tabs."""
         people = get_people(active_only=False)
         teams = get_teams()
         team_map = {t["id"]: t["name"] for t in teams}
@@ -1798,7 +1942,12 @@ class ShiftSchedulerApp:
             team_name = team_map.get(team_id, "Unassigned") if team_id else "Unassigned"
             person_names.append(f"{p['name']} (Team: {team_name})")
 
-        self.exception_person_combo["values"] = person_names
+        # Update all sub-tab combos
+        for subtab_type in ("current", "history", "upcoming"):
+            combo = getattr(self, f"exception_person_combo_{subtab_type}", None)
+            if combo:
+                combo["values"] = person_names
+
         # Store mapping for lookup
         self._exception_person_map = {
             f"{p['name']} (Team: {team_map.get(p.get('team_id'), 'Unassigned') if p.get('team_id') else 'Unassigned'})": p[
@@ -1808,11 +1957,19 @@ class ShiftSchedulerApp:
         }
 
     def _refresh_swap_people(self):
-        """Refresh the person comboboxes for swaps."""
+        """Refresh the person comboboxes for swaps in all sub-tabs."""
         people = get_people(active_only=False)
         person_names = [p["name"] for p in people]
-        self.swap_person_a_combo["values"] = person_names
-        self.swap_person_b_combo["values"] = person_names
+
+        # Update all sub-tab combos
+        for subtab_type in ("current", "history", "upcoming"):
+            combo_a = getattr(self, f"swap_person_a_combo_{subtab_type}", None)
+            combo_b = getattr(self, f"swap_person_b_combo_{subtab_type}", None)
+            if combo_a:
+                combo_a["values"] = person_names
+            if combo_b:
+                combo_b["values"] = person_names
+
         # Store mapping for lookup
         self._swap_person_map = {p["name"]: p["id"] for p in people}
 
@@ -1822,46 +1979,124 @@ class ShiftSchedulerApp:
             shift_values = ["1", "2"]
         else:
             shift_values = ["1", "2", "3"]
-        self.swap_shift_a_combo["values"] = shift_values
-        self.swap_shift_b_combo["values"] = shift_values
-        # Reset to first valid value
-        if shift_values:
-            self.swap_shift_a_var.set(shift_values[0])
-            self.swap_shift_b_var.set(
-                shift_values[1] if len(shift_values) > 1 else shift_values[0]
-            )
 
-    def _refresh_exceptions(self):
-        """Refresh the exceptions treeview."""
-        for item in self.exceptions_tree.get_children():
-            self.exceptions_tree.delete(item)
+        for subtab_type in ("current", "history", "upcoming"):
+            combo_a = getattr(self, f"swap_shift_a_combo_{subtab_type}", None)
+            combo_b = getattr(self, f"swap_shift_b_combo_{subtab_type}", None)
+            if combo_a:
+                combo_a["values"] = shift_values
+            if combo_b:
+                combo_b["values"] = shift_values
+            # Reset to first valid value
+            var_a = getattr(self, f"swap_shift_a_var_{subtab_type}", None)
+            var_b = getattr(self, f"swap_shift_b_var_{subtab_type}", None)
+            if var_a and shift_values:
+                var_a.set(shift_values[0])
+            if var_b and shift_values:
+                var_b.set(shift_values[1] if len(shift_values) > 1 else shift_values[0])
+
+    def _refresh_exceptions(self, subtab_type: str = None):
+        """Refresh the exceptions treeview for a specific sub-tab."""
+        if subtab_type is None:
+            subtab_type = self._get_current_exceptions_subtab()
+
+        vars = self._get_exceptions_vars(subtab_type)
+        tree = vars["tree"]
+
+        if not tree:
+            return
+
+        for item in tree.get_children():
+            tree.delete(item)
+
+        # Determine date range filter based on sub-tab type
+        today = date.today()
+        if subtab_type == "current":
+            # Current month
+            start_filter = today.replace(day=1)
+            end_filter = (
+                start_filter.replace(month=start_filter.month + 1)
+                if start_filter.month < 12
+                else start_filter.replace(year=start_filter.year + 1, month=1)
+            ) - timedelta(days=1)
+        elif subtab_type == "history":
+            # All past (before current month)
+            start_filter = date(1900, 1, 1)
+            end_filter = today.replace(day=1) - timedelta(days=1)
+        elif subtab_type == "upcoming":
+            # Future (after current month)
+            start_filter = (
+                today.replace(day=1).replace(month=today.month + 1)
+                if today.month < 12
+                else today.replace(year=today.year + 1, month=1, day=1)
+            )
+            end_filter = date(2100, 1, 1)
+        else:
+            start_filter = date(1900, 1, 1)
+            end_filter = date(2100, 1, 1)
 
         exceptions = get_availability_exceptions()
         for exc in exceptions:
+            exc_start = date.fromisoformat(exc["start_date"])
+            exc_end = date.fromisoformat(exc["end_date"])
+
+            # Check if exception overlaps with filter range
+            if exc_end < start_filter or exc_start > end_filter:
+                continue
+
             person = get_person(exc["person_id"])
             person_name = person["name"] if person else "Unknown"
-            self.exceptions_tree.insert(
-                "",
-                "end",
-                values=(
-                    exc["id"],
-                    person_name,
-                    exc["start_date"],
-                    exc["end_date"],
-                    exc["reason"],
-                ),
-            )
+            tree = vars["tree"]
+            if tree:
+                tree.insert(
+                    "",
+                    "end",
+                    values=(
+                        exc["id"],
+                        person_name,
+                        exc["start_date"],
+                        exc["end_date"],
+                        exc["reason"],
+                    ),
+                )
 
-    def _refresh_swaps(self):
-        """Refresh the swaps treeview."""
-        for item in self.swaps_tree.get_children():
-            self.swaps_tree.delete(item)
+    def _refresh_swaps(self, subtab_type: str = None):
+        """Refresh the swaps treeview for a specific sub-tab."""
+        if subtab_type is None:
+            subtab_type = self._get_current_swaps_subtab()
 
-        swaps = get_shift_swaps(
-            date.today() - timedelta(days=30), date.today() + timedelta(days=30)
-        )
+        tree = getattr(self, f"swaps_tree_{subtab_type}", None)
+        if not tree:
+            return
+
+        for item in tree.get_children():
+            tree.delete(item)
+
+        # Determine date range filter based on sub-tab type
+        today = date.today()
+        if subtab_type == "current":
+            # Current month ±30 days
+            start_filter = today - timedelta(days=30)
+            end_filter = today + timedelta(days=30)
+        elif subtab_type == "history":
+            # All past
+            start_filter = date(1900, 1, 1)
+            end_filter = today - timedelta(days=1)
+        elif subtab_type == "upcoming":
+            # Future
+            start_filter = today + timedelta(days=1)
+            end_filter = date(2100, 1, 1)
+        else:
+            start_filter = date(1900, 1, 1)
+            end_filter = date(2100, 1, 1)
+
+        swaps = get_shift_swaps(start_filter, end_filter)
+        tree = getattr(self, f"swaps_tree_{subtab_type}", None)
+        if not tree:
+            return
+
         for swap in swaps:
-            self.swaps_tree.insert(
+            tree.insert(
                 "",
                 "end",
                 values=(
@@ -1873,6 +2108,20 @@ class ShiftSchedulerApp:
                     swap["shift_b"],
                 ),
             )
+
+    def _get_current_swaps_subtab(self) -> str:
+        """Get the current swaps sub-tab type."""
+        if not hasattr(self, "swaps_sub_notebook"):
+            return "current"
+        tab_id = self.swaps_sub_notebook.select()
+        if not tab_id:
+            return "current"
+        tab_text = self.swaps_sub_notebook.tab(tab_id, "text")
+        return tab_text.lower()
+
+    def _on_swaps_subtab_changed(self, event=None):
+        """Handle swaps sub-tab change."""
+        self._refresh_swaps()
 
     def _on_load_schedule(self):
         """Load and display the schedule for 18 months from initial date."""
@@ -2147,6 +2396,12 @@ class ShiftSchedulerApp:
             if not row_matches:
                 continue
 
+            # Determine row tag based on cell states
+            row_has_unfilled = False
+            row_has_unavailable = False
+            row_has_swapped = False
+            row_has_substituted = False
+
             for team in teams:
                 team_data = row["teams"].get(
                     team["id"],
@@ -2161,17 +2416,25 @@ class ShiftSchedulerApp:
                     if team_data.get("unfilled"):
                         # Unfilled shift - needs coverage
                         shift_text = "NEEDS COVERAGE"
+                        row_has_unfilled = True
                     elif team_data["is_sub"]:
                         shift_text += " (S)"
+                        row_has_substituted = True
+                    elif team_data.get("is_swapped"):
+                        row_has_swapped = True
+                    elif team_data.get("is_unavailable"):
+                        row_has_unavailable = True
                     values.append(shift_text)
 
-            # Apply zebra striping, but use unfilled tag if any team in this row has unfilled shift
-            has_unfilled = any(
-                row["teams"].get(team["id"], {}).get("unfilled", False)
-                for team in teams
-            )
-            if has_unfilled:
+            # Apply color coding tags based on cell states (priority: unfilled > unavailable > swapped > substituted > zebra)
+            if row_has_unfilled:
                 tag = "unfilled"
+            elif row_has_unavailable:
+                tag = "unavailable"
+            elif row_has_swapped:
+                tag = "swapped"
+            elif row_has_substituted:
+                tag = "substituted"
             else:
                 tag = "evenrow" if i % 2 == 0 else "oddrow"
             self.schedule_tree.insert("", "end", values=values, tags=(tag,))
@@ -2319,6 +2582,30 @@ class ShiftSchedulerApp:
             assignments = get_repo().get_assignments(target_date, target_date)
             team_assignments = [a for a in assignments if a.team_id == team["id"]]
 
+            # Check swaps for this date
+            swaps = get_repo().get_swaps(target_date, target_date)
+            swap_map = {}
+            for s in swaps:
+                if s["person_a_id"] not in swap_map:
+                    swap_map[s["person_a_id"]] = []
+                if s["person_b_id"] not in swap_map:
+                    swap_map[s["person_b_id"]] = []
+                swap_map[s["person_a_id"]].append(
+                    {"person_id": s["person_b_id"], "shift": s["shift_b"]}
+                )
+                swap_map[s["person_b_id"]].append(
+                    {"person_id": s["person_a_id"], "shift": s["shift_a"]}
+                )
+
+            # Check exceptions for this date
+            exceptions = get_repo().get_exceptions()
+            exception_map = {}
+            for exc in exceptions:
+                exc_start = date.fromisoformat(exc["start_date"])
+                exc_end = date.fromisoformat(exc["end_date"])
+                if exc_start <= target_date <= exc_end:
+                    exception_map[exc["person_id"]] = True
+
             # Build a map of person_id -> assignment info for this team/date
             assignment_map = {}
             for a in team_assignments:
@@ -2329,9 +2616,10 @@ class ShiftSchedulerApp:
                     "shift": shift_name + sub_text,
                     "status": "Assigned" + (" (Sub)" if a.is_substitute else ""),
                     "person_name": person["name"] if person else "Unknown",
+                    "is_substitute": a.is_substitute,
                 }
 
-            # Add all team members to squad tree
+            # Add all team members to squad tree with status indicators
             for i, p in enumerate(team_persons):
                 person_id = p["id"]
                 # Check if this person is assigned to the specific shift clicked
@@ -2348,18 +2636,61 @@ class ShiftSchedulerApp:
                     if shift_text.replace(" (S)", "") == assigned_shift:
                         is_assigned_to_shift = True
 
-                # Use different tag for assigned person
+                # Determine status indicators
+                is_unavailable = exception_map.get(person_id, False)
+                is_swapped = person_id in swap_map
+                is_substituted = assignment_map.get(person_id, {}).get(
+                    "is_substitute", False
+                )
+
+                # Determine display status and tag
                 if is_assigned_to_shift:
-                    tag = "assigned"
+                    if is_unavailable:
+                        status_text = "Unavailable ⚠"
+                        tag = "unavailable"
+                    elif is_swapped:
+                        status_text = "Swapped ↔"
+                        tag = "swapped"
+                    elif is_substituted:
+                        status_text = "Substituted ↻"
+                        tag = "substituted"
+                    else:
+                        status_text = "Assigned ✓"
+                        tag = "assigned"
                 else:
-                    tag = "evenrow" if i % 2 == 0 else "oddrow"
+                    if is_unavailable:
+                        status_text = "Unavailable ⚠"
+                        tag = "unavailable"
+                    elif is_swapped:
+                        status_text = "Swapped ↔"
+                        tag = "swapped"
+                    else:
+                        status_text = "Available"
+                        tag = "evenrow" if i % 2 == 0 else "oddrow"
 
                 self.squad_tree.insert(
                     "",
                     "end",
-                    values=(p["name"], p["role"]),
+                    values=(p["name"], p["role"], status_text),
                     tags=(tag,),
                 )
+
+            # Configure squad tree tags for color coding
+            palette = self._get_palette()
+            self.squad_tree.tag_configure(
+                "assigned",
+                background=palette["select"],
+                foreground=palette["accent_text"],
+            )
+            self.squad_tree.tag_configure(
+                "unavailable", background="#ffebee", foreground="#c62828"
+            )
+            self.squad_tree.tag_configure(
+                "swapped", background="#e8f5e9", foreground="#2e7d32"
+            )
+            self.squad_tree.tag_configure(
+                "substituted", background="#fff3e0", foreground="#e65100"
+            )
 
             # If this is an unfilled shift, show recommended substitute and action buttons
             if is_unfilled and unfilled_info:
@@ -3009,13 +3340,41 @@ class ShiftSchedulerApp:
             self._set_busy(False)
 
     # Exception handlers
+    def _get_current_exceptions_subtab(self) -> str:
+        """Get the current exceptions sub-tab type."""
+        if not hasattr(self, "exceptions_sub_notebook"):
+            return "current"
+        tab_id = self.exceptions_sub_notebook.select()
+        if not tab_id:
+            return "current"
+        tab_text = self.exceptions_sub_notebook.tab(tab_id, "text")
+        return tab_text.lower()
+
+    def _get_exceptions_vars(self, subtab_type: str = None):
+        """Get the exception variables for a specific sub-tab."""
+        if subtab_type is None:
+            subtab_type = self._get_current_exceptions_subtab()
+        return {
+            "person_var": getattr(self, f"exception_person_var_{subtab_type}", None),
+            "person_combo": getattr(
+                self, f"exception_person_combo_{subtab_type}", None
+            ),
+            "start_var": getattr(self, f"exception_start_var_{subtab_type}", None),
+            "end_var": getattr(self, f"exception_end_var_{subtab_type}", None),
+            "reason_var": getattr(self, f"exception_reason_var_{subtab_type}", None),
+            "tree": getattr(self, f"exceptions_tree_{subtab_type}", None),
+        }
+
     def _on_exception_person_selected(self, event=None):
         """Handle person selection for exceptions."""
         pass  # Will refresh when button clicked
 
     def _on_add_exception(self):
         """Handle adding an availability exception."""
-        person_key = self.exception_person_var.get()
+        subtab_type = self._get_current_exceptions_subtab()
+        vars = self._get_exceptions_vars(subtab_type)
+
+        person_key = vars["person_var"].get() if vars["person_var"] else ""
         if not person_key:
             messagebox.showwarning("No Person Selected", "Please select a person")
             return
@@ -3027,9 +3386,17 @@ class ShiftSchedulerApp:
         person_id = self._exception_person_map[person_key]
 
         try:
-            start_date = date.fromisoformat(self.exception_start_var.get())
-            end_date = date.fromisoformat(self.exception_end_var.get())
-            reason = self.exception_reason_var.get()
+            start_var = vars["start_var"]
+            end_var = vars["end_var"]
+            reason_var = vars["reason_var"]
+
+            if not start_var or not end_var or not reason_var:
+                messagebox.showerror("Error", "Form not available for this sub-tab")
+                return
+
+            start_date = date.fromisoformat(start_var.get())
+            end_date = date.fromisoformat(end_var.get())
+            reason = reason_var.get()
 
             if start_date > end_date:
                 messagebox.showerror(
@@ -3041,14 +3408,12 @@ class ShiftSchedulerApp:
                 person_id, start_date, end_date, reason
             )
             self._refresh_exceptions()
-            self.status_var.set(
-                f"Availability exception added for {self.exception_person_var.get()}"
-            )
+            self.status_var.set(f"Availability exception added for {person_key}")
 
             # Clear form
-            self.exception_reason_var.set("")
-            self.exception_start_var.set(date.today().isoformat())
-            self.exception_end_var.set((date.today() + timedelta(days=7)).isoformat())
+            reason_var.set("")
+            start_var.set(date.today().isoformat())
+            end_var.set((date.today() + timedelta(days=7)).isoformat())
 
         except ValueError as e:
             messagebox.showerror("Invalid Date", f"Please enter valid dates: {str(e)}")
@@ -3057,14 +3422,21 @@ class ShiftSchedulerApp:
 
     def _on_delete_exception(self):
         """Handle deleting an availability exception."""
-        selection = self.exceptions_tree.selection()
+        subtab_type = self._get_current_exceptions_subtab()
+        vars = self._get_exceptions_vars(subtab_type)
+        tree = vars["tree"]
+
+        if not tree:
+            return
+
+        selection = tree.selection()
         if not selection:
             messagebox.showwarning(
                 "No Selection", "Please select an exception to delete"
             )
             return
 
-        item = self.exceptions_tree.item(selection[0])
+        item = tree.item(selection[0])
         exception_id = item["values"][0]
 
         result = messagebox.askyesno(
@@ -3080,21 +3452,57 @@ class ShiftSchedulerApp:
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to delete exception: {str(e)}")
 
-    def _refresh_exceptions_for_person(self):
+    def _refresh_exceptions_for_person(self, subtab_type: str = None):
         """Refresh exceptions for the selected person."""
-        person_key = self.exception_person_var.get()
-        if person_key and person_key in getattr(self, "_exception_person_map", {}):
-            self._refresh_exceptions()
+        if subtab_type is None:
+            subtab_type = self._get_current_exceptions_subtab()
+        self._refresh_exceptions(subtab_type)
+
+    def _on_exceptions_subtab_changed(self, event=None):
+        """Handle exceptions sub-tab change."""
+        self._refresh_exceptions()
 
     # Swap handlers
+    def _get_swaps_vars(self, subtab_type: str = None):
+        """Get the swap variables for a specific sub-tab."""
+        if subtab_type is None:
+            subtab_type = self._get_current_swaps_subtab()
+        return {
+            "date_var": getattr(self, f"swap_date_var_{subtab_type}", None),
+            "person_a_var": getattr(self, f"swap_person_a_var_{subtab_type}", None),
+            "person_a_combo": getattr(self, f"swap_person_a_combo_{subtab_type}", None),
+            "shift_a_var": getattr(self, f"swap_shift_a_var_{subtab_type}", None),
+            "shift_a_combo": getattr(self, f"swap_shift_a_combo_{subtab_type}", None),
+            "person_b_var": getattr(self, f"swap_person_b_var_{subtab_type}", None),
+            "person_b_combo": getattr(self, f"swap_person_b_combo_{subtab_type}", None),
+            "shift_b_var": getattr(self, f"swap_shift_b_var_{subtab_type}", None),
+            "shift_b_combo": getattr(self, f"swap_shift_b_combo_{subtab_type}", None),
+            "tree": getattr(self, f"swaps_tree_{subtab_type}", None),
+        }
+
     def _on_add_swap(self):
         """Handle adding a shift swap."""
+        subtab_type = self._get_current_swaps_subtab()
+        vars = self._get_swaps_vars(subtab_type)
+
         try:
-            swap_date = date.fromisoformat(self.swap_date_var.get())
-            person_a_name = self.swap_person_a_var.get()
-            person_b_name = self.swap_person_b_var.get()
-            shift_a = int(self.swap_shift_a_var.get())
-            shift_b = int(self.swap_shift_b_var.get())
+            date_var = vars["date_var"]
+            person_a_var = vars["person_a_var"]
+            person_b_var = vars["person_b_var"]
+            shift_a_var = vars["shift_a_var"]
+            shift_b_var = vars["shift_b_var"]
+
+            if not all(
+                [date_var, person_a_var, person_b_var, shift_a_var, shift_b_var]
+            ):
+                messagebox.showerror("Error", "Form not available for this sub-tab")
+                return
+
+            swap_date = date.fromisoformat(date_var.get())
+            person_a_name = person_a_var.get()
+            person_b_name = person_b_var.get()
+            shift_a = int(shift_a_var.get())
+            shift_b = int(shift_b_var.get())
 
             if not person_a_name or not person_b_name:
                 messagebox.showwarning(
@@ -3132,12 +3540,19 @@ class ShiftSchedulerApp:
 
     def _on_delete_swap(self):
         """Handle deleting a shift swap."""
-        selection = self.swaps_tree.selection()
+        subtab_type = self._get_current_swaps_subtab()
+        vars = self._get_swaps_vars(subtab_type)
+        tree = vars["tree"]
+
+        if not tree:
+            return
+
+        selection = tree.selection()
         if not selection:
             messagebox.showwarning("No Selection", "Please select a swap to delete")
             return
 
-        item = self.swaps_tree.item(selection[0])
+        item = tree.item(selection[0])
         swap_id = item["values"][0]
 
         result = messagebox.askyesno(
